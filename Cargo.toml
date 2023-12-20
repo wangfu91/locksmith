@@ -6,3 +6,17 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.75"
+log = "0.4.20"
+log4rs = "1.2.0"
+
+[dependencies.windows]
+version = "0.52.0"
+features = [
+    "Win32_Foundation",
+    "Win32_System",
+    "Wdk_Foundation",
+    "Win32_System_Threading",
+    "Wdk_System",
+    "Wdk_System_SystemInformation",
+]
