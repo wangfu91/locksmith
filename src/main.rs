@@ -13,6 +13,7 @@ use windows::{
         },
         Storage::FileSystem::{GetFileType, FILE_TYPE_DISK},
         System::{
+            ProcessStatus::GetModuleBaseNameW,
             Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE},
             WindowsProgramming::PUBLIC_OBJECT_TYPE_INFORMATION,
         },
@@ -119,7 +120,14 @@ fn process_handle_entry(handle: SystemHandleTableEntryInfoEx) {
     }
 
     if let Ok(file_nt_path) = handle_to_nt_path(&safe_dup_handle) {
-        println!("pid = {}, object_name: {}", pid, file_nt_path);
+        let mut buffer = vec![0u16; MAX_PATH as usize];
+        let len = unsafe { GetModuleBaseNameW(process_handle, None, &mut buffer) };
+        let process_name = String::from_utf16_lossy(&buffer[..len as usize]);
+
+        println!(
+            "pid = {}, name={}, path: {}",
+            pid, process_name, file_nt_path
+        );
     }
 }
 

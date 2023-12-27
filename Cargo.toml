@@ -21,4 +21,5 @@ features = [
     "Wdk_System_SystemInformation",
     "Win32_System_WindowsProgramming",
     "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
 ]
