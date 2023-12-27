@@ -1,5 +1,4 @@
-use std::{ffi::OsString, mem::size_of, os::windows::ffi::OsStringExt};
-
+use anyhow::anyhow;
 use windows::{
     Wdk::{
         Foundation::{
@@ -9,8 +8,8 @@ use windows::{
     },
     Win32::{
         Foundation::{
-            CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, FALSE, HANDLE,
-            STATUS_INFO_LENGTH_MISMATCH,
+            DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED, FALSE, HANDLE, MAX_PATH,
+            STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH,
         },
         Storage::FileSystem::{GetFileType, FILE_TYPE_DISK},
         System::{
@@ -19,6 +18,12 @@ use windows::{
         },
     },
 };
+
+use crate::safe_handle::SafeHandle;
+use crate::to_string::ToString;
+
+mod safe_handle;
+mod to_string;
 
 fn main() {
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS =
@@ -40,7 +45,6 @@ fn main() {
         println!("nt_status: {:?}", nt_status);
 
         if nt_status == STATUS_INFO_LENGTH_MISMATCH {
-            // STATUS_INFO_LENGTH_MISMATCH, increase the buffer size and try again.
             buffer.resize(return_len as usize, 0);
             continue;
         }
@@ -61,128 +65,136 @@ fn main() {
     let handle_count = handle_info.number_of_handles;
     println!("handle_count: {}", handle_count);
 
-    let mut offset = 2 * size_of::<usize>();
+    let mut offset = 2 * std::mem::size_of::<usize>();
 
     for _ in 0..handle_count {
         let handle: SystemHandleTableEntryInfoEx = unsafe {
             std::ptr::read(buffer.as_ptr().add(offset) as *const SystemHandleTableEntryInfoEx)
         };
 
-        offset += size_of::<SystemHandleTableEntryInfoEx>();
+        offset += std::mem::size_of::<SystemHandleTableEntryInfoEx>();
 
-        //println!("handle: {:?}", handle);
-        let pid = handle.unique_process_id;
-        //println!("pid: {}", pid);
+        process_handle_entry(handle);
+    }
+}
 
-        // https://stackoverflow.com/questions/46384048/enumerate-handles
+fn process_handle_entry(handle: SystemHandleTableEntryInfoEx) {
+    let pid = handle.unique_process_id as u32;
 
-        let process_handle = unsafe { OpenProcess(PROCESS_DUP_HANDLE, FALSE, pid as u32) };
+    if pid == std::process::id() {
+        // Skip current process itself.
+        return;
+    }
 
-        if let Err(e) = process_handle {
-            //println!("OpenProcess failed, e: {:?}", e);
-            continue;
+    let process_handle_result = unsafe { OpenProcess(PROCESS_DUP_HANDLE, FALSE, pid) };
+    if let Err(e) = process_handle_result {
+        if e == ERROR_ACCESS_DENIED.into() {
+            // Skip access denied.
+            return;
         }
 
-        let process_handle = process_handle.unwrap();
+        println!("OpenProcess failed, e: {:?}", e);
+        return;
+    }
+    let process_handle = process_handle_result.unwrap();
+    let mut safe_dup_handle = SafeHandle::new(HANDLE::default());
+    let dup_handle_result = unsafe {
+        DuplicateHandle(
+            process_handle,
+            HANDLE(handle.handle_value as isize),
+            GetCurrentProcess(),
+            &mut safe_dup_handle.handle,
+            0,
+            FALSE,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
 
-        let mut dup_handle = HANDLE::default();
+    if dup_handle_result.is_err() {
+        return;
+    }
 
-        let dup_handle_result = unsafe {
-            DuplicateHandle(
-                process_handle,
-                HANDLE(handle.handle_value as isize),
-                GetCurrentProcess(),
-                &mut dup_handle,
-                0,
-                FALSE,
-                DUPLICATE_SAME_ACCESS,
-            )
-        };
+    if check_handle_type(&safe_dup_handle).is_err() {
+        return;
+    }
 
-        if let Err(e) = dup_handle_result {
-            //println!("DuplicateHandle failed, e: {:?}", e);
-            continue;
-        }
+    if let Ok(file_nt_path) = handle_to_nt_path(&safe_dup_handle) {
+        println!("pid = {}, object_name: {}", pid, file_nt_path);
+    }
+}
 
-        let mut return_length = 0u32;
-        let mut object_type_info = vec![0u8; 1024];
+fn check_handle_type(safe_file_handle: &SafeHandle) -> anyhow::Result<()> {
+    let mut return_length = 0u32;
+    let mut buffer = vec![0u8; MAX_PATH as usize];
+    loop {
         let nt_status = unsafe {
             NtQueryObject(
-                dup_handle,
+                safe_file_handle.handle,
                 ObjectTypeInformation,
-                Some(object_type_info.as_mut_ptr() as *mut _),
-                object_type_info.len() as u32,
-                Some(&mut return_length),
-            )
-        };
-
-        if nt_status.is_err() {
-            println!("NtQueryObject failed, nt_status: {:?}", nt_status);
-            let _ = unsafe { CloseHandle(dup_handle) };
-            continue;
-        }
-
-        let object_type_info =
-            unsafe { &*(object_type_info.as_ptr() as *const PUBLIC_OBJECT_TYPE_INFORMATION) };
-
-        let slice = unsafe {
-            std::slice::from_raw_parts(
-                object_type_info.TypeName.Buffer.as_ptr(),
-                object_type_info.TypeName.Length as usize / std::mem::size_of::<u16>(),
-            )
-        };
-
-        let os_string = OsString::from_wide(slice);
-        let object_type_name = os_string.to_string_lossy().to_string();
-        //println!("pid: {}", pid);
-        //println!("object_type_name: {}", object_type_name);
-
-        if object_type_name != "File" {
-            let _ = unsafe { CloseHandle(dup_handle) };
-            continue;
-        }
-
-        let file_type = unsafe { GetFileType(dup_handle) };
-        //println!("file_type: {:?}", file_type);
-        if file_type != FILE_TYPE_DISK {
-            let _ = unsafe { CloseHandle(dup_handle) };
-            continue;
-        }
-
-        let ObjectNameInformation = OBJECT_INFORMATION_CLASS(1);
-        let mut return_length = 0u32;
-        let mut buffer = vec![0u8; 1024];
-
-        let nt_status = unsafe {
-            NtQueryObject(
-                dup_handle,
-                ObjectNameInformation,
                 Some(buffer.as_mut_ptr() as *mut _),
                 buffer.len() as u32,
                 Some(&mut return_length),
             )
         };
 
-        if nt_status.is_err() {
-            println!("NtQueryObject failed, nt_status: {:?}", nt_status);
-            let _ = unsafe { CloseHandle(dup_handle) };
+        if nt_status == STATUS_INFO_LENGTH_MISMATCH || nt_status == STATUS_BUFFER_OVERFLOW {
+            buffer.resize(return_length as usize, 0);
             continue;
         }
 
-        let object_name_info = unsafe { &*(buffer.as_ptr() as *const OBJECT_NAME_INFORMATION) };
+        if nt_status.is_err() {
+            println!("NtQueryObject failed, nt_status: {:?}", nt_status);
+            return Err(anyhow!("NtQueryObject failed, nt_status: {:?}", nt_status));
+        }
 
-        let slice = unsafe {
-            std::slice::from_raw_parts(
-                object_name_info.Name.Buffer.as_ptr(),
-                object_name_info.Name.Length as usize / std::mem::size_of::<u16>(),
+        break;
+    }
+
+    let object_type_info = unsafe { &*(buffer.as_ptr() as *const PUBLIC_OBJECT_TYPE_INFORMATION) };
+
+    let object_type_name = object_type_info.TypeName.to_string();
+    if object_type_name != "File" {
+        return Err(anyhow!("object_type_name != File"));
+    }
+    let file_type = unsafe { GetFileType(safe_file_handle.handle) };
+    if file_type != FILE_TYPE_DISK {
+        return Err(anyhow!("file_type != FILE_TYPE_DISK"));
+    }
+
+    Ok(())
+}
+
+fn handle_to_nt_path(safe_file_handle: &SafeHandle) -> anyhow::Result<String> {
+    let object_name_information = OBJECT_INFORMATION_CLASS(1);
+    let mut return_length = 0u32;
+    let mut buffer = vec![0u8; MAX_PATH as usize];
+    loop {
+        let nt_status = unsafe {
+            NtQueryObject(
+                safe_file_handle.handle,
+                object_name_information,
+                Some(buffer.as_mut_ptr() as *mut _),
+                buffer.len() as u32,
+                Some(&mut return_length),
             )
         };
-        let os_string = OsString::from_wide(slice);
-        let object_name = os_string.to_string_lossy().to_string();
-        println!("pid = {}, object_name: {}", pid, object_name);
 
-        let _ = unsafe { CloseHandle(dup_handle) };
+        if nt_status == STATUS_INFO_LENGTH_MISMATCH || nt_status == STATUS_BUFFER_OVERFLOW {
+            buffer.resize(return_length as usize, 0);
+            continue;
+        }
+
+        if nt_status.is_err() {
+            println!("NtQueryObject failed, nt_status: {:?}", nt_status);
+            return Err(anyhow!("NtQueryObject failed, nt_status: {:?}", nt_status));
+        }
+
+        break;
     }
+
+    let object_name_info = unsafe { &*(buffer.as_ptr() as *const OBJECT_NAME_INFORMATION) };
+    let object_name = object_name_info.Name.to_string();
+    Ok(object_name)
 }
 
 #[repr(C)]
