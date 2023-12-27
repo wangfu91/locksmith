@@ -10,7 +10,7 @@ use windows::{
     Win32::{
         Foundation::{
             CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, FALSE, HANDLE,
-            STATUS_INFO_LENGTH_MISMATCH, UNICODE_STRING,
+            STATUS_INFO_LENGTH_MISMATCH,
         },
         Storage::FileSystem::{GetFileType, FILE_TYPE_DISK},
         System::{
@@ -61,24 +61,18 @@ fn main() {
     let handle_count = handle_info.number_of_handles;
     println!("handle_count: {}", handle_count);
 
-    for i in 0..handle_count {
-        let offset = i * size_of::<SystemHandleTableEntryInfoEx>();
-        if offset > return_len as usize {
-            break;
-        }
+    let mut offset = 2 * size_of::<usize>();
 
+    for _ in 0..handle_count {
         let handle: SystemHandleTableEntryInfoEx = unsafe {
-            std::ptr::read(handle_info.handles.as_ptr().offset(offset as isize)
-                as *const SystemHandleTableEntryInfoEx)
+            std::ptr::read(buffer.as_ptr().add(offset) as *const SystemHandleTableEntryInfoEx)
         };
+
+        offset += size_of::<SystemHandleTableEntryInfoEx>();
 
         //println!("handle: {:?}", handle);
         let pid = handle.unique_process_id;
         //println!("pid: {}", pid);
-
-        if pid == 0 {
-            continue;
-        }
 
         // https://stackoverflow.com/questions/46384048/enumerate-handles
 
@@ -143,6 +137,11 @@ fn main() {
         //println!("pid: {}", pid);
         //println!("object_type_name: {}", object_type_name);
 
+        if object_type_name != "File" {
+            let _ = unsafe { CloseHandle(dup_handle) };
+            continue;
+        }
+
         let file_type = unsafe { GetFileType(dup_handle) };
         //println!("file_type: {:?}", file_type);
         if file_type != FILE_TYPE_DISK {
@@ -184,8 +183,6 @@ fn main() {
 
         let _ = unsafe { CloseHandle(dup_handle) };
     }
-
-    println!("handle_info: {:?}", handle_info);
 }
 
 #[repr(C)]
