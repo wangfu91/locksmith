@@ -8,7 +8,7 @@ use windows::{
     },
     Win32::{
         Foundation::{
-            DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED, FALSE, HANDLE, MAX_PATH,
+            DuplicateHandle, DUPLICATE_SAME_ACCESS, FALSE, HANDLE, MAX_PATH,
             STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH,
         },
         Storage::FileSystem::{GetFileType, FILE_TYPE_DISK},
@@ -22,7 +22,15 @@ use windows::{
 use crate::safe_handle::SafeHandle;
 use crate::to_string::ToString;
 
-pub fn enum_handles() -> anyhow::Result<()> {
+#[derive(Debug)]
+pub struct HandleInfo {
+    pub pid: u32,
+    pub handle: SafeHandle,
+    pub type_name: String,
+    pub nt_path: String,
+}
+
+pub fn enum_handles() -> anyhow::Result<Vec<HandleInfo>> {
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS =
         SYSTEM_INFORMATION_CLASS(64i32);
 
@@ -38,8 +46,6 @@ pub fn enum_handles() -> anyhow::Result<()> {
                 &mut return_len,
             )
         };
-
-        println!("nt_status: {:?}", nt_status);
 
         if nt_status == STATUS_INFO_LENGTH_MISMATCH {
             buffer.resize(return_len as usize, 0);
@@ -62,6 +68,8 @@ pub fn enum_handles() -> anyhow::Result<()> {
 
     let mut offset = 2 * std::mem::size_of::<usize>();
 
+    let mut handle_info_collection = Vec::with_capacity(handle_count);
+
     for _ in 0..handle_count {
         let handle: SystemHandleTableEntryInfoEx = unsafe {
             std::ptr::read(buffer.as_ptr().add(offset) as *const SystemHandleTableEntryInfoEx)
@@ -69,30 +77,22 @@ pub fn enum_handles() -> anyhow::Result<()> {
 
         offset += std::mem::size_of::<SystemHandleTableEntryInfoEx>();
 
-        process_handle_entry(handle);
+        if let Some(handle_info) = process_handle_entry(handle) {
+            handle_info_collection.push(handle_info);
+        }
     }
 
-    Ok(())
+    Ok(handle_info_collection)
 }
 
-pub fn process_handle_entry(handle: SystemHandleTableEntryInfoEx) {
+pub fn process_handle_entry(handle: SystemHandleTableEntryInfoEx) -> Option<HandleInfo> {
     let pid = handle.unique_process_id as u32;
 
-    if pid == std::process::id() {
-        // Skip current process itself.
-        return;
-    }
-
     let process_handle_result = unsafe { OpenProcess(PROCESS_DUP_HANDLE, FALSE, pid) };
-    if let Err(e) = process_handle_result {
-        if e == ERROR_ACCESS_DENIED.into() {
-            // Skip access denied.
-            return;
-        }
-
-        println!("OpenProcess failed, e: {:?}", e);
-        return;
+    if process_handle_result.is_err() {
+        return None;
     }
+
     let safe_process_handle = SafeHandle::new(process_handle_result.unwrap());
     let mut safe_dup_handle = SafeHandle::new(HANDLE::default());
     let dup_handle_result = unsafe {
@@ -108,25 +108,27 @@ pub fn process_handle_entry(handle: SystemHandleTableEntryInfoEx) {
     };
 
     if dup_handle_result.is_err() {
-        return;
+        return None;
     }
 
-    if check_handle_type(&safe_dup_handle).is_err() {
-        return;
+    if !is_handle_type_file(&safe_dup_handle) {
+        return None;
     }
 
-    if let Ok(file_nt_path) = handle_to_nt_path(&safe_dup_handle) {
-        /*
-        let mut buffer = vec![0u16; MAX_PATH as usize];
-        let len = unsafe { GetModuleBaseNameW(safe_process_handle.handle, None, &mut buffer) };
-        let process_name = String::from_utf16_lossy(&buffer[..len as usize]);
-        */
+    let to_nt_path_result = handle_to_nt_path(&safe_dup_handle);
 
-        println!("pid = {}, path: {}", pid, file_nt_path);
+    match to_nt_path_result {
+        Ok(nt_path) => Some(HandleInfo {
+            pid,
+            handle: safe_dup_handle,
+            type_name: "File".to_string(),
+            nt_path,
+        }),
+        Err(_e) => None,
     }
 }
 
-pub fn check_handle_type(safe_file_handle: &SafeHandle) -> anyhow::Result<()> {
+pub fn is_handle_type_file(safe_file_handle: &SafeHandle) -> bool {
     let mut return_length = 0u32;
     let mut buffer = vec![0u8; MAX_PATH as usize];
     loop {
@@ -147,7 +149,7 @@ pub fn check_handle_type(safe_file_handle: &SafeHandle) -> anyhow::Result<()> {
 
         if nt_status.is_err() {
             println!("NtQueryObject failed, nt_status: {:?}", nt_status);
-            return Err(anyhow!("NtQueryObject failed, nt_status: {:?}", nt_status));
+            return false;
         }
 
         break;
@@ -157,14 +159,14 @@ pub fn check_handle_type(safe_file_handle: &SafeHandle) -> anyhow::Result<()> {
 
     let object_type_name = object_type_info.TypeName.to_string();
     if object_type_name != "File" {
-        return Err(anyhow!("object_type_name != File"));
+        return false;
     }
     let file_type = unsafe { GetFileType(safe_file_handle.handle) };
     if file_type != FILE_TYPE_DISK {
-        return Err(anyhow!("file_type != FILE_TYPE_DISK"));
+        return false;
     }
 
-    Ok(())
+    true
 }
 
 pub fn handle_to_nt_path(safe_file_handle: &SafeHandle) -> anyhow::Result<String> {
