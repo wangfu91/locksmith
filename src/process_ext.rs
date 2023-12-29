@@ -64,7 +64,7 @@ pub fn enum_processes() {
     }
 }
 
-pub fn pid_to_full_path(pid: u32) -> anyhow::Result<String> {
+pub fn pid_to_process_name(pid: u32) -> anyhow::Result<String> {
     let process_handle =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid)? };
     let safe_process_handle = SafeHandle::new(process_handle);
@@ -72,6 +72,16 @@ pub fn pid_to_full_path(pid: u32) -> anyhow::Result<String> {
     let len = unsafe { GetModuleBaseNameW(safe_process_handle.handle, None, &mut buffer) };
     let process_name = String::from_utf16_lossy(&buffer[..len as usize]);
     Ok(process_name)
+}
+
+pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<String> {
+    let process_handle =
+        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid)? };
+    let safe_process_handle = SafeHandle::new(process_handle);
+    let mut buffer = vec![0u16; MAX_PATH as usize];
+    let len = unsafe { GetModuleFileNameExW(safe_process_handle.handle, None, &mut buffer) };
+    let process_full_path = String::from_utf16_lossy(&buffer[..len as usize]);
+    Ok(process_full_path)
 }
 
 pub fn enum_process_modules(pid: u32) -> anyhow::Result<()> {
