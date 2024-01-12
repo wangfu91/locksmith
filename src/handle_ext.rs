@@ -64,7 +64,6 @@ pub fn enum_handles() -> anyhow::Result<Vec<HandleInfo>> {
 
     let handle_info = unsafe { &*(buffer.as_ptr() as *const SystemHandleInformationEx) };
     let handle_count = handle_info.number_of_handles;
-    println!("handle_count: {}", handle_count);
 
     let mut offset = 2 * std::mem::size_of::<usize>();
 

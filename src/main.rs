@@ -1,5 +1,6 @@
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use std::time::Instant;
 
 mod handle_ext;
 mod path_ext;
@@ -12,20 +13,13 @@ mod to_string;
 #[command(about = "locksmith", long_about = None)]
 struct Cli {
     path: String,
-
-    #[command(subcommand)]
-    command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
-enum Commands {}
-
 fn main() {
-    //let cli = Cli::parse();
-
-    let path = r"C:\Users\WangF\Desktop\Welcome to Word.docx";
-
-    let find_result = find_locker(path);
+    let start = Instant::now();
+    let cli = Cli::parse();
+    let find_result = find_locker(&cli.path);
+    let elapsed = start.elapsed();
 
     match find_result {
         Ok(results) => {
@@ -41,9 +35,11 @@ fn main() {
             }
         }
         Err(err) => {
-            println!("find_locker failed, err: {:?}", err);
+            eprintln!("find_locker failed, err: {:?}", err);
         }
     }
+
+    println!("elapsed: {:.2}s", elapsed.as_secs_f64());
 }
 
 fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
