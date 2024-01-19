@@ -2,7 +2,14 @@ use anyhow::Context;
 use clap::Parser;
 use std::time::Instant;
 
+use log::LevelFilter;
+use log::{error, info, warn};
+use log4rs::append::console::ConsoleAppender;
+use log4rs::config::{Appender, Config, Root};
+use log4rs::encode::pattern::PatternEncoder;
+
 mod handle_ext;
+mod nt_ext;
 mod path_ext;
 mod process_ext;
 mod safe_handle;
@@ -16,6 +23,9 @@ struct Cli {
 }
 
 fn main() {
+    init_logger(LevelFilter::Info).unwrap_or_else(|err| {
+        eprintln!("init_logger failed, err: {:?}", err);
+    });
     let start = Instant::now();
     let cli = Cli::parse();
     let find_result = find_locker(&cli.path);
@@ -24,22 +34,22 @@ fn main() {
     match find_result {
         Ok(results) => {
             if results.is_empty() {
-                println!("no locker found");
+                warn!("no locker found");
             } else {
                 for result in results {
-                    println!("pid: {}", result.pid);
-                    println!("process_name: {}", result.process_name);
-                    println!("process_full_path: {}", result.process_full_path);
-                    println!();
+                    info!("pid: {}", result.pid);
+                    info!("name: {}", result.name);
+                    info!("user: {}", result.user);
+                    info!("path: {}\n", result.process_full_path);
                 }
             }
         }
         Err(err) => {
-            eprintln!("find_locker failed, err: {:?}", err);
+            error!("find_locker failed, err: {:?}", err);
         }
     }
 
-    println!("elapsed: {:.2}s", elapsed.as_secs_f64());
+    info!("elapsed: {:.2}s", elapsed.as_secs_f64());
 }
 
 fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
@@ -52,12 +62,22 @@ fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
 
     for handle_info in handle_infos {
         if handle_info.nt_path == nt_path {
+            let pid = handle_info.pid;
+            let name =
+                process_ext::pid_to_process_name(pid).unwrap_or_else(|_| "unknown".to_string());
+
+            let user = if let Ok((domain, user)) = process_ext::pid_to_user(pid) {
+                format!("{}\\{}", domain, user)
+            } else {
+                "unknown".to_string()
+            };
+            let process_full_path = process_ext::pid_to_process_full_path(pid)
+                .unwrap_or_else(|_| "unknown".to_string());
             let process_result = ProcessResult {
                 pid: handle_info.pid,
-                process_name: process_ext::pid_to_process_name(handle_info.pid)
-                    .unwrap_or_else(|_| "unknown".to_string()),
-                process_full_path: process_ext::pid_to_process_full_path(handle_info.pid)
-                    .unwrap_or_else(|_| "unknown".to_string()),
+                name,
+                user,
+                process_full_path,
             };
             process_result_collection.push(process_result);
         }
@@ -69,7 +89,8 @@ fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
             if module == nt_path {
                 let process_result = ProcessResult {
                     pid: process_info.pid,
-                    process_name: process_info.process_name.clone(),
+                    name: process_info.process_name.clone(),
+                    user: process_info.user.clone(),
                     process_full_path: process_info.process_full_path.clone(),
                 };
                 process_result_collection.push(process_result);
@@ -82,6 +103,24 @@ fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
 
 struct ProcessResult {
     pid: u32,
-    process_name: String,
+    name: String,
+    user: String,
     process_full_path: String,
+}
+
+fn init_logger(level: LevelFilter) -> anyhow::Result<()> {
+    // Create a console appender
+    let stdout = ConsoleAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("{l} - {m}\n")))
+        .build();
+
+    // Configure the logger to write to the console appender
+    let config = Config::builder()
+        .appender(Appender::builder().build("stdout", Box::new(stdout)))
+        .build(Root::builder().appender("stdout").build(level))?;
+
+    // Initialize the logger
+    log4rs::init_config(config)?;
+
+    Ok(())
 }

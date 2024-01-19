@@ -1,12 +1,9 @@
 use anyhow::anyhow;
 use windows::{
     core::HSTRING,
-    Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{
-            CreateFileW, GetFileType, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, OPEN_EXISTING,
-        },
+    Win32::Storage::FileSystem::{
+        CreateFileW, GetFileType, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_TYPE_DISK, OPEN_EXISTING,
     },
 };
 
@@ -21,7 +18,7 @@ pub fn win32_path_to_nt_path(win32_path: String) -> anyhow::Result<String> {
             None,
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS,
-            HANDLE::default(),
+            None,
         )?
     };
 
