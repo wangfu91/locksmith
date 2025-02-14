@@ -10,7 +10,7 @@ mod nt_ext;
 mod path_ext;
 mod process_ext;
 mod safe_handle;
-mod to_string;
+mod string_ext;
 
 #[derive(Parser, Debug)]
 #[command(name = "locksmith")]
@@ -37,7 +37,6 @@ fn main() {
                 for result in results {
                     info!("pid: {}", result.pid);
                     info!("name: {}", result.name);
-                    info!("user: {}", result.user);
                     info!("path: {}\n", result.process_full_path);
                 }
             }
@@ -63,18 +62,11 @@ fn find_locker(path: &str) -> anyhow::Result<HashSet<ProcessResult>> {
             let pid = handle_info.pid;
             let name =
                 process_ext::pid_to_process_name(pid).unwrap_or_else(|_| "unknown".to_string());
-
-            let user = if let Ok((domain, user)) = process_ext::pid_to_user(pid) {
-                format!("{}\\{}", domain, user)
-            } else {
-                "unknown".to_string()
-            };
             let process_full_path = process_ext::pid_to_process_full_path(pid)
                 .unwrap_or_else(|_| "unknown".to_string());
             let process_result = ProcessResult {
-                pid: handle_info.pid,
+                pid,
                 name,
-                user,
                 process_full_path,
             };
             process_results.insert(process_result);
@@ -88,7 +80,6 @@ fn find_locker(path: &str) -> anyhow::Result<HashSet<ProcessResult>> {
                 let process_result = ProcessResult {
                     pid: process_info.pid,
                     name: process_info.process_name.clone(),
-                    user: process_info.user.clone(),
                     process_full_path: process_info.process_full_path.clone(),
                 };
                 process_results.insert(process_result);
@@ -103,6 +94,5 @@ fn find_locker(path: &str) -> anyhow::Result<HashSet<ProcessResult>> {
 struct ProcessResult {
     pid: u32,
     name: String,
-    user: String,
     process_full_path: String,
 }

@@ -20,7 +20,7 @@ use windows::{
     },
 };
 
-use crate::to_string::ToString;
+use crate::string_ext::ToString;
 use crate::{nt_ext, safe_handle::SafeHandle};
 
 #[derive(Debug)]
@@ -177,4 +177,20 @@ pub struct SystemHandleTableEntryInfoEx {
     object_type_index: u16,
     handle_attributes: u32,
     reserved: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // cargo test test_enum_handles -- --nocapture
+    #[test]
+    fn test_enum_handles() {
+        let handle_infos = enum_handles().unwrap();
+        assert!(!handle_infos.is_empty());
+
+        for handle_info in handle_infos {
+            println!("pid={}, nt_path={}", handle_info.pid, handle_info.nt_path);
+        }
+    }
 }

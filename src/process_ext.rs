@@ -20,13 +20,12 @@ use windows::{
 };
 
 use crate::safe_handle::SafeHandle;
-use crate::{nt_ext, path_ext, to_string::ToString};
+use crate::{nt_ext, path_ext, string_ext::ToString};
 
 pub struct ProcessInfo {
     pub pid: u32,
     pub process_name: String,
     pub process_full_path: String,
-    pub user: String,
     pub modules: Vec<String>,
 }
 
@@ -56,16 +55,10 @@ pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
             pid_to_process_full_path(pid).unwrap_or_else(|_| "unknown".to_string());
 
         let module_nt_paths = enum_process_modules(pid).unwrap_or_else(|_| Vec::new());
-        let user = if let Ok((domain, user)) = pid_to_user(pid) {
-            format!("{}\\{}", domain, user)
-        } else {
-            "unknown".to_string()
-        };
         let process_info = ProcessInfo {
             pid,
             process_name,
             process_full_path,
-            user,
             modules: module_nt_paths,
         };
 
@@ -148,7 +141,7 @@ fn get_moudle_name(
     Ok(module_name)
 }
 
-pub fn pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
+pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
     let open_process_result = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) };
     let process_handle = match open_process_result {
         Ok(handle) => handle,
@@ -258,4 +251,26 @@ pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<String> {
 
     let process_full_path = get_moudle_name(&safe_process_handle, None)?;
     Ok(process_full_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // cargo test test_enum_processes -- --nocapture
+    #[test]
+    fn test_enum_processes() {
+        let process_infos = enum_processes().unwrap();
+        assert!(!process_infos.is_empty());
+
+        for process_info in process_infos {
+            println!("pid: {}", process_info.pid);
+            println!("name: {}", process_info.process_name);
+            println!("path: {}", process_info.process_full_path);
+            for module in process_info.modules {
+                println!("\tmodule: {}", module);
+            }
+            println!();
+        }
+    }
 }

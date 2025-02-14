@@ -20,9 +20,8 @@ impl ToString for UNICODE_STRING {
         // Calculate character count (divide byte length by size of u16)
         let char_count = self.Length as usize / std::mem::size_of::<u16>();
 
-        // Safety check for reasonable string length
+        // Safety check for Windows Max long path length
         if char_count > 32768 {
-            // arbitrary reasonable maximum
             return String::new();
         }
 
