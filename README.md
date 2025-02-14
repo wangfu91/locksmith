@@ -1,6 +1,8 @@
 # Locksmith 🔒
 
-A Windows utility to find out which processes are locking your files. Ever wondered why you can't delete or modify a file? Locksmith will help you identify the processes that are holding onto your files.
+A Windows utility to find out which processes are locking your files. 
+
+Ever wondered why you can't delete or modify a file? Locksmith will help you identify the processes that are holding onto your files.
 
 ## Features
 
@@ -59,7 +61,7 @@ modules: [
 ```
 
 ## Building from Source
-
+On Windows:
 ```bash
 git clone https://github.com/wangfu91/locksmith
 cd locksmith
