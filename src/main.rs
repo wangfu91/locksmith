@@ -3,11 +3,7 @@ use clap::Parser;
 use std::collections::HashSet;
 use std::time::Instant;
 
-use log::LevelFilter;
 use log::{error, info, warn};
-use log4rs::append::console::ConsoleAppender;
-use log4rs::config::{Appender, Config, Root};
-use log4rs::encode::pattern::PatternEncoder;
 
 mod handle_ext;
 mod nt_ext;
@@ -24,9 +20,9 @@ struct Cli {
 }
 
 fn main() {
-    init_logger(LevelFilter::Info).unwrap_or_else(|err| {
-        eprintln!("init_logger failed, err: {:?}", err);
-    });
+    // $env:RUST_LOG="INFO" && cargo run -- "C:\path\to\file"
+    env_logger::init();
+
     let start = Instant::now();
     let cli = Cli::parse();
     let find_result = find_locker(&cli.path);
@@ -37,6 +33,7 @@ fn main() {
             if results.is_empty() {
                 warn!("No locker found");
             } else {
+                info!("Found {} locker(s):\n", results.len());
                 for result in results {
                     info!("pid: {}", result.pid);
                     info!("name: {}", result.name);
@@ -108,21 +105,4 @@ struct ProcessResult {
     name: String,
     user: String,
     process_full_path: String,
-}
-
-fn init_logger(level: LevelFilter) -> anyhow::Result<()> {
-    // Create a console appender
-    let stdout = ConsoleAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{l} - {m}\n")))
-        .build();
-
-    // Configure the logger to write to the console appender
-    let config = Config::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .build(Root::builder().appender("stdout").build(level))?;
-
-    // Initialize the logger
-    log4rs::init_config(config)?;
-
-    Ok(())
 }
