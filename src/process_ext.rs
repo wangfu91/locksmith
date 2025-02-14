@@ -68,7 +68,7 @@ pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
     Ok(process_info_collection)
 }
 
-fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
+pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
     // https://learn.microsoft.com/en-us/windows/win32/psapi/enumerating-all-processes
     let process_handle =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
