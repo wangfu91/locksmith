@@ -128,13 +128,13 @@ fn get_moudle_name(
 ) -> anyhow::Result<String> {
     let mut buffer = vec![0u16; MAX_PATH as usize];
 
-    let mut actual_len =
+    let actual_len =
         unsafe { GetModuleFileNameExW(Some(safe_process_handle.handle), module, &mut buffer) };
 
     if ERROR_INSUFFICIENT_BUFFER == unsafe { GetLastError() } {
-        buffer.resize(actual_len as usize, 0);
-        actual_len =
-            unsafe { GetModuleFileNameExW(Some(safe_process_handle.handle), module, &mut buffer) };
+        // Plus one for the null terminator.
+        buffer.resize((actual_len + 1) as usize, 0);
+        unsafe { GetModuleFileNameExW(Some(safe_process_handle.handle), module, &mut buffer) };
     }
 
     if actual_len == 0 {
@@ -144,7 +144,7 @@ fn get_moudle_name(
         ));
     }
 
-    let module_name = String::from_utf16_lossy(&buffer[..actual_len as usize]);
+    let module_name = String::from_utf16_lossy(&buffer);
     Ok(module_name)
 }
 

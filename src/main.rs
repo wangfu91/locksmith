@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::Parser;
+use std::collections::HashSet;
 use std::time::Instant;
 
 use log::LevelFilter;
@@ -34,7 +35,7 @@ fn main() {
     match find_result {
         Ok(results) => {
             if results.is_empty() {
-                warn!("no locker found");
+                warn!("No locker found");
             } else {
                 for result in results {
                     info!("pid: {}", result.pid);
@@ -52,11 +53,11 @@ fn main() {
     info!("elapsed: {:.2}s", elapsed.as_secs_f64());
 }
 
-fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
+fn find_locker(path: &str) -> anyhow::Result<HashSet<ProcessResult>> {
     let nt_path = path_ext::win32_path_to_nt_path(path.to_string())
         .with_context(|| "win32_path_to_nt_path failed")?;
 
-    let mut process_result_collection = Vec::<ProcessResult>::new();
+    let mut process_results = HashSet::<ProcessResult>::new();
 
     let handle_infos = handle_ext::enum_handles().with_context(|| "enum_handles failed")?;
 
@@ -79,7 +80,7 @@ fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
                 user,
                 process_full_path,
             };
-            process_result_collection.push(process_result);
+            process_results.insert(process_result);
         }
     }
 
@@ -93,14 +94,15 @@ fn find_locker(path: &str) -> anyhow::Result<Vec<ProcessResult>> {
                     user: process_info.user.clone(),
                     process_full_path: process_info.process_full_path.clone(),
                 };
-                process_result_collection.push(process_result);
+                process_results.insert(process_result);
             }
         }
     }
 
-    Ok(process_result_collection)
+    Ok(process_results)
 }
 
+#[derive(Hash, Eq, PartialEq, Debug)]
 struct ProcessResult {
     pid: u32,
     name: String,
