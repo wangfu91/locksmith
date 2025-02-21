@@ -49,13 +49,13 @@ cargo build --release
 
 ## License
 
-Licensed under either of
-
- * Apache License, Version 2.0
  * MIT license
-
-at your option.
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Attribution
+
+This project is a Rust port of the PowerToys's FileLockSmith module.
+The original implementation is in C++ and can be found here: https://github.com/microsoft/PowerToys/tree/main/src/modules/FileLocksmith.
