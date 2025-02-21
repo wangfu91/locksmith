@@ -21,10 +21,6 @@ struct Cli {
     /// Path to the file you want to check for locks
     #[arg(required = true)]
     path: String,
-
-    /// Show detailed information about the process
-    #[arg(short, long)]
-    verbose: bool,
 }
 
 fn main() {
@@ -43,9 +39,6 @@ fn main() {
                     println!("pid: {}", result.pid);
                     println!("name: {}", result.name);
                     println!("path: {}", result.path);
-                    if cli.verbose {
-                        println!("modules: {:#?}", result.modules);
-                    }
                     println!();
                 }
             }
@@ -73,17 +66,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
                 process_ext::pid_to_process_name(pid).unwrap_or_else(|_| "unknown".to_string());
             let path = process_ext::pid_to_process_full_path(pid)
                 .unwrap_or_else(|_| "unknown".to_string());
-            let modules = if cli.verbose {
-                process_ext::enum_process_modules(pid).unwrap_or_else(|_| Vec::new())
-            } else {
-                Vec::new()
-            };
-            let process_result = ProcessResult {
-                pid,
-                name,
-                path,
-                modules,
-            };
+            let process_result = ProcessResult { pid, name, path };
             process_results.insert(pid, process_result);
         }
     }
@@ -96,11 +79,6 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
                     pid: process_info.pid,
                     name: process_info.process_name.clone(),
                     path: process_info.process_full_path.clone(),
-                    modules: if cli.verbose {
-                        process_info.modules.clone()
-                    } else {
-                        Vec::new()
-                    },
                 };
                 process_results.insert(process_info.pid, process_result);
             }
@@ -115,5 +93,4 @@ struct ProcessResult {
     pid: u32,
     name: String,
     path: String,
-    modules: Vec<String>,
 }
