@@ -1,16 +1,20 @@
 [package]
-name = "locksmith"
+name = "win-locksmith"
 version = "0.1.0"
 authors = ["Fu Wang <wangfu91@hotmail.com>"]
 description = "A Windows utility to find processes locking your files"
 repository = "https://github.com/wangfu91/locksmith"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 keywords = ["windows", "utility", "file-locks", "process"]
 categories = ["command-line-utilities", "development-tools", "filesystem"]
 edition = "2021"
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "locksmith"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.95"
