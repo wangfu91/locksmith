@@ -13,7 +13,7 @@ Ever wondered why you can't delete or modify a file? Locksmith will help you ide
 ## Installation
 
 ```bash
-cargo install locksmith
+cargo install win-locksmith
 ```
 
 ## Usage
