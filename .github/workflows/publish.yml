@@ -21,8 +21,8 @@ jobs:
           toolchain: stable
           targets: x86_64-pc-windows-msvc
       
-      - name: Check package
-        run: cargo package --check
+      - name: Verify package
+        run: cargo package
       
       - name: Login to crates.io
         run: cargo login ${{ secrets.CARGO_REGISTRY_TOKEN }}
