@@ -42,7 +42,6 @@ fn main() {
             } else {
                 println!("Found {} locker(s):\n", results.len());
                 for result in results.values() {
-                    // Borrow results for printing
                     println!("pid: {}", result.pid);
                     println!("name: {}", result.name);
                     println!("path: {}", result.path);
@@ -120,7 +119,6 @@ fn main() {
     println!("elapsed: {:.2}s", elapsed.as_secs_f64());
 }
 
-// Add the kill_processes function
 fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usize> {
     let mut killed_count = 0;
     if processes.is_empty() {
