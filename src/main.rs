@@ -142,7 +142,6 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
             process_info.pid, process_info.name, process_info.path
         );
         match process_ext::kill_process_by_pid(*pid) {
-            // Calling the function from process_ext module
             Ok(_) => {
                 println!(
                     "Successfully sent termination signal to process PID {}.",
@@ -152,7 +151,7 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
             }
             Err(e) => {
                 eprintln!("Failed to kill process PID {}: {:?}", pid, e);
-                // Decide if you want to stop on error or continue
+                // Ignore the error and continue
             }
         }
     }
