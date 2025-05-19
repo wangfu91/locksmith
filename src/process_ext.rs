@@ -1,22 +1,23 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use windows::{
-    core::{Error, PWSTR},
     Wdk::System::SystemInformation::SystemProcessInformation,
     Win32::{
-        Foundation::{GetLastError, ERROR_INSUFFICIENT_BUFFER, HMODULE, MAX_PATH},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError, HMODULE, MAX_PATH},
         Security::{
-            GetTokenInformation, LookupAccountSidW, TokenUser, SID_NAME_USE, TOKEN_QUERY,
-            TOKEN_USER,
+            GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
+            TokenUser,
         },
         System::{
             ProcessStatus::{EnumProcessModules, GetModuleBaseNameW, GetModuleFileNameExW},
             Threading::{
                 OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
+                TerminateProcess,
             },
             WindowsProgramming::SYSTEM_PROCESS_INFORMATION,
         },
     },
+    core::{Error, PWSTR},
 };
 
 use crate::safe_handle::SafeHandle;
@@ -137,7 +138,7 @@ fn get_moudle_name(
         ));
     }
 
-    let module_name = String::from_utf16_lossy(&buffer);
+    let module_name = String::from_utf16_lossy(&buffer[..actual_len as usize]);
     Ok(module_name)
 }
 
@@ -206,51 +207,74 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
         }
     }
 
-    // Allocate buffers and get user/domain names
+    // Allocate buffers and get user and domain
     let mut user_buffer = vec![0u16; user_size as usize];
     let mut domain_buffer = vec![0u16; domain_size as usize];
-
     unsafe {
         LookupAccountSidW(
             None,
             psid,
-            Some(PWSTR::from_raw(user_buffer.as_mut_ptr())),
+            Some(PWSTR(user_buffer.as_mut_ptr())),
             &mut user_size,
-            Some(PWSTR::from_raw(domain_buffer.as_mut_ptr())),
+            Some(PWSTR(domain_buffer.as_mut_ptr())),
             &mut domain_size,
             &mut sid_name_use,
-        )?
-    }
+        )
+        .with_context(|| "LookupAccountSidW failed")?
+    };
 
-    let domain_name = String::from_utf16_lossy(&domain_buffer[..domain_size as usize]);
-    let user_name = String::from_utf16_lossy(&user_buffer[..user_size as usize]);
+    let user = String::from_utf16_lossy(&user_buffer[..user_size as usize]);
+    let domain = String::from_utf16_lossy(&domain_buffer[..domain_size as usize]);
 
-    Ok((domain_name, user_name))
+    Ok((user, domain))
 }
 
 pub fn pid_to_process_name(pid: u32) -> anyhow::Result<String> {
-    let process_handle =
-        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
+    let process_handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            pid,
+        )?
+    };
     let safe_process_handle = SafeHandle::new(process_handle);
+
     let mut buffer = vec![0u16; MAX_PATH as usize];
-    let len = unsafe { GetModuleBaseNameW(safe_process_handle.handle, None, &mut buffer) };
-    if len == 0 {
+    let actual_len = unsafe { GetModuleBaseNameW(safe_process_handle.handle, None, &mut buffer) };
+
+    if actual_len == 0 {
         return Err(anyhow!(
             "GetModuleBaseNameW failed, error: {}",
             Error::from_win32()
         ));
     }
-    let process_name = String::from_utf16_lossy(&buffer[..len as usize]);
+
+    let process_name = String::from_utf16_lossy(&buffer[..actual_len as usize]);
     Ok(process_name)
 }
 
 pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<String> {
-    let process_handle =
-        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
+    let process_handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            pid,
+        )?
+    };
     let safe_process_handle = SafeHandle::new(process_handle);
 
-    let process_full_path = get_moudle_name(&safe_process_handle, None)?;
-    Ok(process_full_path)
+    get_moudle_name(&safe_process_handle, None)
+}
+
+pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
+    let process_handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid)? };
+    let safe_process_handle = SafeHandle::new(process_handle);
+
+    unsafe {
+        TerminateProcess(safe_process_handle.handle, 1)
+            .context(format!("Failed to terminate process with PID: {}", pid))?
+    }
+    Ok(())
 }
 
 #[cfg(test)]
