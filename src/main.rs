@@ -1,8 +1,8 @@
 use anyhow::Context;
 use clap::Parser;
-use colored::*; // Added for colored output
+use colored::Colorize;
 use std::collections::HashMap;
-use std::io::{self, Write}; // Added for user input and stdout flush
+use std::io::{self, Write};
 use std::time::Instant;
 
 mod handle_ext;
