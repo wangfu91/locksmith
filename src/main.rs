@@ -25,8 +25,8 @@ struct Cli {
     path: String,
 
     /// Forcefully kill the processes locking the file (requires confirmation)
-    #[arg(short, long, default_value_t = false)]
-    force: bool,
+    #[arg(short = 'k', long, default_value_t = false)]
+    kill: bool,
 }
 
 fn main() {
@@ -49,8 +49,7 @@ fn main() {
                     println!();
                 }
 
-                // Add logic for --force flag
-                if cli.force {
+                if cli.kill {
                     println!(
                         "{}",
                         "WARNING: You are about to attempt to KILL the process(es) listed above."
