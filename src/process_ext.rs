@@ -108,7 +108,7 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
                 buffer.as_ptr().add((i * size_of_single_module) as usize) as *const HMODULE
             )
         };
-        let module_name = get_moudle_name(&safe_process_handle, Some(module))?;
+        let module_name = get_module_name(&safe_process_handle, Some(module))?;
         let module_nt_path = path_ext::win32_path_to_nt_path(module_name)?;
         moudle_nt_path_collection.push(module_nt_path);
     }
@@ -116,7 +116,7 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
     Ok(moudle_nt_path_collection)
 }
 
-fn get_moudle_name(
+fn get_module_name(
     safe_process_handle: &SafeHandle,
     module: Option<HMODULE>,
 ) -> anyhow::Result<String> {
@@ -263,7 +263,7 @@ pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<String> {
     };
     let safe_process_handle = SafeHandle::new(process_handle);
 
-    get_moudle_name(&safe_process_handle, None)
+    get_module_name(&safe_process_handle, None)
 }
 
 pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
