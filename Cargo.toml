@@ -1,6 +1,6 @@
 [package]
 name = "win-locksmith"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Fu Wang <wangfu91@hotmail.com>"]
 description = "A Windows utility to find processes locking your files"
 repository = "https://github.com/wangfu91/locksmith"
