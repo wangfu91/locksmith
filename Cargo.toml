@@ -7,7 +7,7 @@ repository = "https://github.com/wangfu91/locksmith"
 license = "MIT"
 keywords = ["windows", "utility", "file-locks", "process"]
 categories = ["command-line-utilities", "development-tools", "filesystem"]
-edition = "2021"
+edition = "2024"
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -17,12 +17,12 @@ name = "locksmith"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.95"
-clap = { version = "4.5.29", features = ["derive"] }
-log = "0.4.25"
+anyhow = "1.0.98"
+clap = { version = "4.5.38", features = ["derive"] }
+log = "0.4.27"
 
 [dependencies.windows]
-version = "0.59.0"
+version = "0.61.1"
 features = [
     "Win32_Foundation",
     "Win32_System",
