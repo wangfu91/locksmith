@@ -1,6 +1,8 @@
 use anyhow::Context;
 use clap::Parser;
+use colored::Colorize;
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::time::Instant;
 
 mod handle_ext;
@@ -21,6 +23,10 @@ struct Cli {
     /// Path to the file you want to check for locks
     #[arg(required = true)]
     path: String,
+
+    /// Forcefully kill the processes locking the file (requires confirmation)
+    #[arg(short = 'k', long, default_value_t = false)]
+    kill: bool,
 }
 
 fn main() {
@@ -35,11 +41,73 @@ fn main() {
                 eprintln!("No locker found");
             } else {
                 println!("Found {} locker(s):\n", results.len());
-                for (_, result) in results {
+                for result in results.values() {
                     println!("pid: {}", result.pid);
                     println!("name: {}", result.name);
                     println!("path: {}", result.path);
                     println!();
+                }
+
+                if cli.kill {
+                    println!(
+                        "{}",
+                        "WARNING: You are about to attempt to KILL the process(es) listed above."
+                            .bold()
+                            .yellow()
+                    );
+                    println!(
+                        "{}",
+                        "This is a DESTRUCTIVE and UNRECOVERABLE operation that could lead to data loss or system instability."
+                            .bold()
+                            .red()
+                    );
+                    print!(
+                        "{} ",
+                        "Are you absolutely sure you want to proceed? (y/N):"
+                            .bold()
+                            .yellow()
+                    );
+                    io::stdout()
+                        .flush()
+                        .context("Failed to flush stdout")
+                        .unwrap_or_else(|e| eprintln!("Error flushing stdout: {}", e));
+
+                    let mut confirmation = String::new();
+                    match io::stdin().read_line(&mut confirmation) {
+                        Ok(_) => {
+                            if confirmation.trim().eq_ignore_ascii_case("y") {
+                                println!("Proceeding to kill processes...");
+                                match kill_processes(&results) {
+                                    Ok(killed_count) => {
+                                        if killed_count > 0 {
+                                            println!(
+                                                "Successfully attempted to kill {} process(es).",
+                                                killed_count
+                                            );
+                                        } else {
+                                            println!("No processes were targeted or killed.");
+                                        }
+                                        if killed_count < results.len() {
+                                            println!(
+                                                "{}",
+                                                "Note: Some processes might not have been killed due to errors, lack of permissions, or if they already exited."
+                                                .yellow()
+                                            );
+                                        }
+                                    }
+                                    Err(e) => eprintln!(
+                                        "An error occurred during the kill process: {:?}",
+                                        e
+                                    ),
+                                }
+                            } else {
+                                println!("Operation cancelled by user.");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read user input: {:?}. Operation cancelled.", e);
+                        }
+                    }
                 }
             }
         }
@@ -49,6 +117,42 @@ fn main() {
     }
 
     println!("elapsed: {:.2}s", elapsed.as_secs_f64());
+}
+
+fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usize> {
+    let mut killed_count = 0;
+    if processes.is_empty() {
+        println!("No processes to kill.");
+        return Ok(0);
+    }
+
+    println!(
+        "{}",
+        "IMPORTANT: Attempting to terminate processes. This can have unintended consequences."
+            .bold()
+            .red()
+    );
+
+    for (pid, process_info) in processes {
+        println!(
+            "Attempting to kill process: PID {}, Name: '{}', Path: '{}'",
+            process_info.pid, process_info.name, process_info.path
+        );
+        match process_ext::kill_process_by_pid(*pid) {
+            Ok(_) => {
+                println!(
+                    "Successfully sent termination signal to process PID {}.",
+                    pid
+                );
+                killed_count += 1;
+            }
+            Err(e) => {
+                eprintln!("Failed to kill process PID {}: {:?}", pid, e);
+                // Ignore the error and continue
+            }
+        }
+    }
+    Ok(killed_count)
 }
 
 fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {

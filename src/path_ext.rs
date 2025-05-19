@@ -1,10 +1,10 @@
 use anyhow::anyhow;
 use windows::{
-    core::HSTRING,
     Win32::Storage::FileSystem::{
-        CreateFileW, GetFileType, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_TYPE_DISK, OPEN_EXISTING,
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_TYPE_DISK, GetFileType, OPEN_EXISTING,
     },
+    core::HSTRING,
 };
 
 use crate::{handle_ext::handle_to_nt_path, safe_handle::SafeHandle};

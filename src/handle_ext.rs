@@ -4,15 +4,15 @@ use anyhow::anyhow;
 use log::debug;
 use windows::{
     Wdk::{
-        Foundation::{ObjectTypeInformation, OBJECT_INFORMATION_CLASS, OBJECT_NAME_INFORMATION},
+        Foundation::{OBJECT_INFORMATION_CLASS, OBJECT_NAME_INFORMATION, ObjectTypeInformation},
         System::SystemInformation::SYSTEM_INFORMATION_CLASS,
     },
     Win32::{
         Foundation::{
-            DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE,
+            DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE,
             ERROR_NOT_SUPPORTED, HANDLE,
         },
-        Storage::FileSystem::{GetFileType, FILE_TYPE_DISK},
+        Storage::FileSystem::{FILE_TYPE_DISK, GetFileType},
         System::{
             Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE},
             WindowsProgramming::PUBLIC_OBJECT_TYPE_INFORMATION,
