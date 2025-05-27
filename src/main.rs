@@ -3,6 +3,7 @@ use clap::Parser;
 use colored::Colorize;
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::path::Path;
 use std::time::Instant;
 
 mod handle_ext;
@@ -40,7 +41,11 @@ fn main() {
             if results.is_empty() {
                 eprintln!("No locker found");
             } else {
-                println!("Found {} locker(s):\n", results.len());
+                println!(
+                    "Found {} locker(s) in {:.2}s:\n",
+                    results.len(),
+                    elapsed.as_secs_f64()
+                );
                 for result in results.values() {
                     println!("pid: {}", result.pid);
                     println!("name: {}", result.name);
@@ -115,8 +120,6 @@ fn main() {
             eprintln!("find_locker failed, err: {:?}", err);
         }
     }
-
-    println!("elapsed: {:.2}s", elapsed.as_secs_f64());
 }
 
 fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usize> {
@@ -156,12 +159,22 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
 }
 
 fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
-    let nt_path = path_ext::win32_path_to_nt_path(cli.path.to_string())
-        .with_context(|| "win32_path_to_nt_path failed")?;
+    let reference_path = &cli.path;
+
+    if reference_path.is_empty() {
+        return Err(anyhow::anyhow!("Path cannot be empty"));
+    }
+
+    if !Path::new(reference_path).exists() {
+        return Err(anyhow::anyhow!("Path does not exist: {}", reference_path));
+    }
+
+    let nt_path = path_ext::win32_path_to_nt_path(reference_path)
+        .with_context(|| "Failed to convert Win32 path to NT path")?;
 
     let mut process_results = HashMap::<u32, ProcessResult>::new();
 
-    let handle_infos = handle_ext::enum_handles().with_context(|| "enum_handles failed")?;
+    let handle_infos = handle_ext::enum_handles().with_context(|| "Failed to enumerate handles")?;
 
     for handle_info in handle_infos {
         if path_ext::is_same_or_ancestor_of(&nt_path, &handle_info.nt_path) {
@@ -175,7 +188,8 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
         }
     }
 
-    let proces_infos = process_ext::enum_processes().with_context(|| "enum_processes failed")?;
+    let proces_infos =
+        process_ext::enum_processes().with_context(|| "Failed to enumerate processes")?;
     for process_info in proces_infos {
         for module in &process_info.modules {
             if path_ext::is_same_or_ancestor_of(&nt_path, module) {

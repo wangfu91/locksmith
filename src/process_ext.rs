@@ -147,11 +147,7 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
     let process_handle = match open_process_result {
         Ok(handle) => handle,
         Err(err) => {
-            return Err(anyhow!(
-                "OpenProcess failed, pid: {}, error: {}",
-                pid,
-                err.to_string()
-            ));
+            return Err(anyhow!("OpenProcess failed, pid: {}, error: {}", pid, err));
         }
     };
 

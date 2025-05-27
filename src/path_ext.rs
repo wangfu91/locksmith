@@ -9,10 +9,10 @@ use windows::{
 
 use crate::{handle_ext::handle_to_nt_path, safe_handle::SafeHandle};
 
-pub fn win32_path_to_nt_path(win32_path: String) -> anyhow::Result<String> {
+pub fn win32_path_to_nt_path(win32_path: impl AsRef<str>) -> anyhow::Result<String> {
     let handle = unsafe {
         CreateFileW(
-            &HSTRING::from(win32_path),
+            &HSTRING::from(win32_path.as_ref()),
             0u32,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
@@ -73,14 +73,14 @@ pub fn is_same_or_ancestor_of(reference_path: &str, subject_path: &str) -> bool 
         }
 
         // If reference_path ends with a path separator, then subject_path starting with it is enough.
-        // e.g., ref = "C:\\foo\\", sub = "C:\\foo\\bar.txt"
+        // e.g., ref = "C:\foo\", sub = "C:\foo\bar.txt"
         if reference_path.ends_with('\\') {
             // Check for trailing backslash
             return true;
         } else {
             // If reference_path does not end with a separator,
             // the character in subject_path immediately after the reference_path prefix must be a separator.
-            // e.g., ref = "C:\\foo", sub = "C:\\foo\\bar.txt"
+            // e.g., ref = "C:\foo", sub = "C:\foo\bar.txt"
             return subject_path.as_bytes().get(ref_len) == Some(&b'\\'); // Check for backslash at join point
         }
     }
@@ -95,50 +95,35 @@ mod tests {
 
     #[test]
     fn test_is_same_or_ancestor_of_exact_match() {
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\Users"
-        ));
+        assert!(is_same_or_ancestor_of(r"C:\Users", r"C:\Users"));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_subject_is_child() {
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\Users\TestUser"
-        ));
+        assert!(is_same_or_ancestor_of(r"C:\Users", r"C:\Users\TestUser"));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_subject_is_grandchild() {
         assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\Users\TestUser\file.txt"
+            r"C:\Users",
+            r"C:\Users\TestUser\file.txt"
         ));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_different_paths() {
-        assert!(!is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\Windows"
-        ));
+        assert!(!is_same_or_ancestor_of(r"C:\Users", r"C:\Windows"));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_partial_match_not_ancestor() {
-        assert!(!is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\User"
-        ));
+        assert!(!is_same_or_ancestor_of(r"C:\Users", r"C:\User"));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_reference_is_child_of_subject() {
-        assert!(!is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users\TestUser",
-            r"\\Device\HarddiskVolume1\Users"
-        ));
+        assert!(!is_same_or_ancestor_of(r"C:\Users\TestUser", r"C:\Users"));
     }
 
     #[test]
@@ -150,61 +135,37 @@ mod tests {
 
     #[test]
     fn test_is_same_or_ancestor_of_no_trailing_slash_on_reference() {
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\Users\Test"
-        ));
+        assert!(is_same_or_ancestor_of(r"C:\Users", r"C:\Users\Test"));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_subject_is_shorter_and_starts_with() {
-        assert!(!is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users\Project",
-            r"\\Device\HarddiskVolume1\Users"
-        ));
+        assert!(!is_same_or_ancestor_of(r"C:\Users\Project", r"C:\Users"));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_different_casing() {
         // On Windows, comparison should be case-insensitive.
-        assert!(is_same_or_ancestor_of(
-            r"\\DEVICE\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\Users"
-        ));
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users",
-            r"\\Device\HarddiskVolume1\USERS\TestUser"
-        ));
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\USERS\",
-            r"\\Device\HarddiskVolume1\Users\TestUser"
-        ));
+        assert!(is_same_or_ancestor_of(r"C:\Users", r"C:\Users"));
+        assert!(is_same_or_ancestor_of(r"C:\Users", r"C:\USERS\TestUser"));
+        assert!(is_same_or_ancestor_of(r"C:\USERS\", r"C:\Users\TestUser"));
     }
     #[test]
     fn test_is_same_or_ancestor_of_reference_ends_with_slash() {
         // The function should correctly handle if reference_path ends with a slash,
         // though NT paths typically don't.
 
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users\",
-            r"\\Device\HarddiskVolume1\Users\TestUser"
-        ));
-        assert!(is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users\",
-            r"\\Device\HarddiskVolume1\Users\"
-        ));
+        assert!(is_same_or_ancestor_of(r"C:\Users\", r"C:\Users\TestUser"));
+        assert!(is_same_or_ancestor_of(r"C:\Users\", r"C:\Users\"));
         assert!(!is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Users\",
-            r"\\Device\HarddiskVolume1\Users" // Subject does not have trailing slash
+            r"C:\Users\",
+            r"C:\Users" // Subject does not have trailing slash
         ));
     }
 
     #[test]
     fn test_is_same_or_ancestor_of_not_direct_child() {
         // Example: ref = "A\B", subject = "A\BC" (should be false)
-        assert!(!is_same_or_ancestor_of(
-            r"\\Device\HarddiskVolume1\Us",
-            r"\\Device\HarddiskVolume1\Users"
-        ));
+        assert!(!is_same_or_ancestor_of(r"C:\Us", r"C:\Users"));
     }
 }
