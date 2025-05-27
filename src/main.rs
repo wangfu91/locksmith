@@ -164,7 +164,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
     let handle_infos = handle_ext::enum_handles().with_context(|| "enum_handles failed")?;
 
     for handle_info in handle_infos {
-        if handle_info.nt_path == nt_path {
+        if path_ext::is_same_or_ancestor_of(&nt_path, &handle_info.nt_path) {
             let pid = handle_info.pid;
             let name =
                 process_ext::pid_to_process_name(pid).unwrap_or_else(|_| "unknown".to_string());
@@ -178,7 +178,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
     let proces_infos = process_ext::enum_processes().with_context(|| "enum_processes failed")?;
     for process_info in proces_infos {
         for module in &process_info.modules {
-            if module == &nt_path {
+            if path_ext::is_same_or_ancestor_of(&nt_path, module) {
                 let process_result = ProcessResult {
                     pid: process_info.pid,
                     name: process_info.process_name.clone(),
