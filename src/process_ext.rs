@@ -268,7 +268,7 @@ pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
 
     unsafe {
         TerminateProcess(safe_process_handle.handle, 1)
-            .context(format!("Failed to terminate process with PID: {}", pid))?
+            .context(format!("Failed to terminate process with PID: {pid}"))?
     }
     Ok(())
 }
@@ -288,7 +288,7 @@ mod tests {
             println!("name: {}", process_info.process_name);
             println!("path: {}", process_info.process_full_path);
             for module in process_info.modules {
-                println!("\tmodule: {}", module);
+                println!("\tmodule: {module}");
             }
             println!();
         }

@@ -73,7 +73,7 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
     match open_process_result {
         Err(err) => {
             if err.code() != ERROR_ACCESS_DENIED.into() {
-                debug!("OpenProcess failed, pid: {}, error: {:?}", pid, err);
+                debug!("OpenProcess failed, pid: {pid}, error: {err:?}");
             }
             None
         }
@@ -95,7 +95,7 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
                     && err.code() != ERROR_ACCESS_DENIED.into()
                     && err.code() != ERROR_INVALID_HANDLE.into()
                 {
-                    debug!("DuplicateHandle failed, pid: {}, error: {:?}", pid, err);
+                    debug!("DuplicateHandle failed, pid: {pid}, error: {err:?}");
                 }
                 return None;
             }
@@ -109,7 +109,7 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
             match handle_to_nt_path_result {
                 Ok(nt_path) => Some(HandleInfo { pid, nt_path }),
                 Err(err) => {
-                    debug!("handle_to_nt_path failed, pid: {}, error: {:?}", pid, err);
+                    debug!("handle_to_nt_path failed, pid: {pid}, error: {err:?}");
                     None
                 }
             }

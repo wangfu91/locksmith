@@ -75,7 +75,7 @@ fn main() {
                     io::stdout()
                         .flush()
                         .context("Failed to flush stdout")
-                        .unwrap_or_else(|e| eprintln!("Error flushing stdout: {}", e));
+                        .unwrap_or_else(|e| eprintln!("Error flushing stdout: {e}"));
 
                     let mut confirmation = String::new();
                     match io::stdin().read_line(&mut confirmation) {
@@ -86,8 +86,7 @@ fn main() {
                                     Ok(killed_count) => {
                                         if killed_count > 0 {
                                             println!(
-                                                "Successfully attempted to kill {} process(es).",
-                                                killed_count
+                                                "Successfully attempted to kill {killed_count} process(es)."
                                             );
                                         } else {
                                             println!("No processes were targeted or killed.");
@@ -101,8 +100,7 @@ fn main() {
                                         }
                                     }
                                     Err(e) => eprintln!(
-                                        "An error occurred during the kill process: {:?}",
-                                        e
+                                        "An error occurred during the kill process: {e:?}"
                                     ),
                                 }
                             } else {
@@ -110,14 +108,14 @@ fn main() {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to read user input: {:?}. Operation cancelled.", e);
+                            eprintln!("Failed to read user input: {e:?}. Operation cancelled.");
                         }
                     }
                 }
             }
         }
         Err(err) => {
-            eprintln!("find_locker failed, err: {:?}", err);
+            eprintln!("find_locker failed, err: {err:?}");
         }
     }
 }
@@ -144,13 +142,12 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
         match process_ext::kill_process_by_pid(*pid) {
             Ok(_) => {
                 println!(
-                    "Successfully sent termination signal to process PID {}.",
-                    pid
+                    "Successfully sent termination signal to process PID {pid}."
                 );
                 killed_count += 1;
             }
             Err(e) => {
-                eprintln!("Failed to kill process PID {}: {:?}", pid, e);
+                eprintln!("Failed to kill process PID {pid}: {e:?}");
                 // Ignore the error and continue
             }
         }
