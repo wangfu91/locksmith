@@ -25,7 +25,7 @@ use windows::{
     core::{Error, Owned, PWSTR},
 };
 
-use crate::wide_query;
+use crate::{diagnostics::Diagnostics, wide_query};
 
 pub struct ProcessInfo {
     pub pid: u32,
@@ -34,7 +34,18 @@ pub struct ProcessInfo {
     pub modules: Vec<PathBuf>,
 }
 
-pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
+pub struct ProcessScan {
+    pub processes: Vec<ProcessInfo>,
+    pub diagnostics: Diagnostics,
+}
+
+pub struct ModuleScan {
+    pub paths: Vec<PathBuf>,
+    pub diagnostics: Diagnostics,
+}
+
+pub fn enum_processes() -> anyhow::Result<ProcessScan> {
+    let mut diagnostics = Diagnostics::default();
     let mut process_info_collection = Vec::<ProcessInfo>::new();
     for entry in process_snapshot()? {
         let pid = entry.th32ProcessID;
@@ -48,7 +59,16 @@ pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
         let process_full_path =
             pid_to_process_full_path(pid).unwrap_or_else(|_| PathBuf::from("unknown"));
 
-        let module_nt_paths = enum_process_modules(pid).unwrap_or_else(|_| Vec::new());
+        let module_nt_paths = match enum_process_modules(pid) {
+            Ok(scan) => {
+                diagnostics.merge(scan.diagnostics);
+                scan.paths
+            }
+            Err(error) => {
+                diagnostics.record(format!("PID {pid}: module scan failed: {error:#}"));
+                Vec::new()
+            }
+        };
         let process_info = ProcessInfo {
             pid,
             process_name,
@@ -59,7 +79,10 @@ pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
         process_info_collection.push(process_info);
     }
 
-    Ok(process_info_collection)
+    Ok(ProcessScan {
+        processes: process_info_collection,
+        diagnostics,
+    })
 }
 
 pub fn process_snapshot() -> anyhow::Result<Vec<PROCESSENTRY32W>> {
@@ -93,7 +116,7 @@ fn collect_snapshot(
     }
 }
 
-pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
+pub fn enum_process_modules(pid: u32) -> anyhow::Result<ModuleScan> {
     // https://learn.microsoft.com/en-us/windows/win32/psapi/enumerating-all-processes
     let process_handle =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
@@ -113,10 +136,28 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
         Ok(needed as usize)
     })
     .context("EnumProcessModules failed")?;
-    modules
-        .into_iter()
-        .map(|module| mapped_module_path(&safe_process_handle, module))
-        .collect()
+    Ok(collect_module_paths(modules, |module| {
+        mapped_module_path(&safe_process_handle, module)
+    }))
+}
+
+fn collect_module_paths(
+    modules: impl IntoIterator<Item = HMODULE>,
+    mut query: impl FnMut(HMODULE) -> anyhow::Result<PathBuf>,
+) -> ModuleScan {
+    let mut scan = ModuleScan {
+        paths: Vec::new(),
+        diagnostics: Diagnostics::default(),
+    };
+    for module in modules {
+        match query(module) {
+            Ok(path) => scan.paths.push(path),
+            Err(error) => scan
+                .diagnostics
+                .record(format!("Module path query failed: {error:#}")),
+        }
+    }
+    scan
 }
 
 fn query_modules(
@@ -318,6 +359,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn module_failure_preserves_successes_and_continues() {
+        let modules = [
+            HMODULE(std::ptr::without_provenance_mut(1)),
+            HMODULE(std::ptr::without_provenance_mut(2)),
+            HMODULE(std::ptr::without_provenance_mut(3)),
+        ];
+        let scan = collect_module_paths(modules, |module| match module.0 as usize {
+            2 => anyhow::bail!("module unloaded"),
+            number => Ok(PathBuf::from(format!("module{number}.dll"))),
+        });
+        assert_eq!(
+            scan.paths,
+            [PathBuf::from("module1.dll"), PathBuf::from("module3.dll")]
+        );
+        assert_eq!(scan.diagnostics.failed_operations, 1);
+    }
+
+    #[test]
     fn typed_module_array_retries_and_rejects_bad_lengths() {
         let mut attempts = 0;
         let modules = query_modules(|buffer| {
@@ -414,7 +473,7 @@ mod tests {
     // cargo test test_enum_processes -- --nocapture
     #[test]
     fn test_enum_processes() {
-        let process_infos = enum_processes().unwrap();
+        let process_infos = enum_processes().unwrap().processes;
         assert!(!process_infos.is_empty());
 
         for process_info in process_infos {

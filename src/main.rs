@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
+mod diagnostics;
 mod handle_ext;
 mod nt_ext;
 mod path_ext;
@@ -38,7 +39,17 @@ fn main() {
     let elapsed = start.elapsed();
 
     match find_result {
-        Ok(results) => {
+        Ok(scan) => {
+            let results = scan.processes;
+            if scan.diagnostics.failed_operations > 0 {
+                eprintln!(
+                    "Warning: {} query operation(s) failed; scan results may be incomplete.",
+                    scan.diagnostics.failed_operations
+                );
+                for example in scan.diagnostics.examples {
+                    eprintln!("  {example}");
+                }
+            }
             if results.is_empty() {
                 eprintln!("No locker found");
             } else {
@@ -156,7 +167,12 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
     Ok(killed_count)
 }
 
-fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
+struct ScanResult {
+    processes: HashMap<u32, ProcessResult>,
+    diagnostics: diagnostics::Diagnostics,
+}
+
+fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     let reference_path = &cli.path;
 
     if reference_path.as_os_str().is_empty() {
@@ -174,6 +190,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
         .with_context(|| "Failed to convert Win32 path to NT path")?;
 
     let mut process_results = HashMap::<u32, ProcessResult>::new();
+    let mut diagnostics = diagnostics::Diagnostics::default();
 
     let handle_infos = handle_ext::enum_handles().with_context(|| "Failed to enumerate handles")?;
 
@@ -189,8 +206,16 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
         }
     }
 
-    let proces_infos =
-        process_ext::enum_processes().with_context(|| "Failed to enumerate processes")?;
+    let proces_infos = match process_ext::enum_processes() {
+        Ok(scan) => {
+            diagnostics.merge(scan.diagnostics);
+            scan.processes
+        }
+        Err(error) => {
+            diagnostics.record(format!("Process enumeration failed: {error:#}"));
+            Vec::new()
+        }
+    };
     for process_info in proces_infos {
         for module in &process_info.modules {
             if path_ext::is_same_or_ancestor_of(&nt_path, module) {
@@ -204,7 +229,10 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
         }
     }
 
-    Ok(process_results)
+    Ok(ScanResult {
+        processes: process_results,
+        diagnostics,
+    })
 }
 
 #[derive(Debug)]
