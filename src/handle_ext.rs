@@ -36,34 +36,12 @@ pub fn enum_handles() -> anyhow::Result<Vec<HandleInfo>> {
 
     let buffer = nt_ext::nt_query_information_loop(SYSTEM_EXTENDED_HANDLE_INFORMATION)?;
 
-    let handle_info = unsafe {
-        if buffer.len() < std::mem::size_of::<SystemHandleInformationEx>() {
-            return Err(anyhow!("Buffer too small for SystemHandleInformationEx"));
-        }
-        std::ptr::read_unaligned(buffer.as_ptr() as *const SystemHandleInformationEx)
-    };
-
-    let handle_count = handle_info.number_of_handles;
-
-    // Skip over the first two fields of the SystemHandleInformationEx struct.
-    let mut offset = 2 * std::mem::size_of::<usize>();
-
-    let mut handle_info_collection = Vec::with_capacity(handle_count);
-
-    for _ in 0..handle_count {
-        let handle_entry: SystemHandleTableEntryInfoEx = unsafe {
-            std::ptr::read_unaligned(
-                buffer.as_ptr().add(offset) as *const SystemHandleTableEntryInfoEx
-            )
-        };
-
-        offset += std::mem::size_of::<SystemHandleTableEntryInfoEx>();
-
-        if let Some(handle_info) = get_handle_info(handle_entry) {
-            handle_info_collection.push(handle_info);
+    let mut handle_info_collection = Vec::new();
+    for entry in handle_entries(&buffer)? {
+        if let Some(info) = get_handle_info(entry) {
+            handle_info_collection.push(info);
         }
     }
-
     Ok(handle_info_collection)
 }
 
@@ -162,14 +140,31 @@ pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<Pat
     Ok(PathBuf::from(object_name))
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct SystemHandleInformationEx {
-    number_of_handles: usize,
-    reserved: usize,
-    handles: [SystemHandleTableEntryInfoEx; 1],
+/// Validate the complete fixed-size table once, then iterate bounded chunks.
+fn handle_entries(
+    buffer: &[u8],
+) -> anyhow::Result<impl Iterator<Item = SystemHandleTableEntryInfoEx> + '_> {
+    const WORD: usize = std::mem::size_of::<usize>();
+    const ENTRY: usize = std::mem::size_of::<SystemHandleTableEntryInfoEx>();
+    let header = buffer
+        .get(..2 * WORD)
+        .ok_or_else(|| anyhow!("Handle table header is truncated"))?;
+    let count = usize::from_ne_bytes(header[..WORD].try_into()?);
+    let length = count
+        .checked_mul(ENTRY)
+        .ok_or_else(|| anyhow!("Handle count overflow"))?;
+    let end = (2 * WORD)
+        .checked_add(length)
+        .ok_or_else(|| anyhow!("Handle table range overflow"))?;
+    let records = buffer
+        .get(2 * WORD..end)
+        .ok_or_else(|| anyhow!("Handle table records are truncated"))?;
+    Ok(records.as_chunks::<ENTRY>().0.iter().map(|chunk| {
+        // SAFETY: a whole record is present. The C layout contains only integers
+        // and opaque pointers (valid for every bit pattern), never dereferenced.
+        unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<SystemHandleTableEntryInfoEx>()) }
+    }))
 }
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SystemHandleTableEntryInfoEx {
@@ -186,6 +181,35 @@ pub struct SystemHandleTableEntryInfoEx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handle_table_validates_count_before_iterating() {
+        let word = std::mem::size_of::<usize>();
+        let entry_size = std::mem::size_of::<SystemHandleTableEntryInfoEx>();
+        let pid_offset = std::mem::offset_of!(SystemHandleTableEntryInfoEx, unique_process_id);
+        for expected in [vec![], vec![17usize], vec![17usize, 42, 99]] {
+            let mut buffer = vec![0; 2 * word + expected.len() * entry_size];
+            buffer[..word].copy_from_slice(&expected.len().to_ne_bytes());
+            for (index, pid) in expected.iter().enumerate() {
+                let offset = 2 * word + index * entry_size + pid_offset;
+                buffer[offset..offset + word].copy_from_slice(&pid.to_ne_bytes());
+            }
+            assert_eq!(
+                handle_entries(&buffer)
+                    .unwrap()
+                    .map(|entry| entry.unique_process_id)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            if !expected.is_empty() {
+                assert!(handle_entries(&buffer[..buffer.len() - 1]).is_err());
+            }
+        }
+        assert!(handle_entries(&[]).is_err());
+        let mut overflow = vec![0; 2 * word];
+        overflow[..word].copy_from_slice(&usize::MAX.to_ne_bytes());
+        assert!(handle_entries(&overflow).is_err());
+    }
 
     // cargo test test_enum_handles -- --nocapture
     #[test]
