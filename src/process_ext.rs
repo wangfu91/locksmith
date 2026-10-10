@@ -8,7 +8,9 @@ use windows::{
             TokenUser,
         },
         System::{
-            ProcessStatus::{EnumProcessModules, GetModuleBaseNameW, GetModuleFileNameExW},
+            ProcessStatus::{
+                EnumProcessModules, GetMappedFileNameW, GetModuleBaseNameW, GetModuleFileNameExW,
+            },
             Threading::{
                 OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
                 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
@@ -20,7 +22,7 @@ use windows::{
     core::{Error, Owned, PWSTR},
 };
 
-use crate::{nt_ext, path_ext, string_ext::ToString, wide_query};
+use crate::{nt_ext, string_ext::ToString, wide_query};
 
 pub struct ProcessInfo {
     pub pid: u32,
@@ -108,12 +110,26 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
                 buffer.as_ptr().add((i * size_of_single_module) as usize) as *const HMODULE
             )
         };
-        let module_name = get_module_name(&safe_process_handle, Some(module))?;
-        let module_nt_path = path_ext::win32_path_to_nt_path(module_name)?;
+        let module_nt_path = mapped_module_path(&safe_process_handle, module)?;
         moudle_nt_path_collection.push(module_nt_path);
     }
 
     Ok(moudle_nt_path_collection)
+}
+
+/// Ask for the existing mapping's name; never reopen a foreign loader path.
+fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Result<String> {
+    let buffer = wide_query::query(|buffer| {
+        // SAFETY: the process handle is live; the API queries the remote address,
+        // rather than dereferencing it in this process. The output slice is valid.
+        let length = unsafe { GetMappedFileNameW(**process, module.0, buffer) } as usize;
+        if length == 0 {
+            return Err(Error::from_thread().into());
+        }
+        Ok((length < buffer.len()).then_some(length))
+    })
+    .context("GetMappedFileNameW failed")?;
+    Ok(String::from_utf16_lossy(&buffer))
 }
 
 fn get_module_name(
@@ -269,6 +285,36 @@ pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_executable_and_dll_match_existing_file_names() {
+        let pid = std::process::id();
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) }
+            .unwrap();
+        // SAFETY: the successful call returned a new owned process handle.
+        let process = unsafe { Owned::new(raw) };
+        let mut modules = [HMODULE::default(); 1024];
+        let mut needed = 0;
+        unsafe {
+            EnumProcessModules(
+                *process,
+                modules.as_mut_ptr(),
+                std::mem::size_of_val(&modules) as u32,
+                &mut needed,
+            )
+        }
+        .unwrap();
+        assert!(needed as usize <= std::mem::size_of_val(&modules));
+        let modules = &modules[..needed as usize / std::mem::size_of::<HMODULE>()];
+        assert!(modules.len() >= 2);
+        for &module in modules.iter().take(2) {
+            let loader_path = get_module_name(&process, Some(module)).unwrap();
+            // This control explicitly opens our own known executable/DLL, not a foreign path.
+            let expected = crate::path_ext::win32_path_to_nt_path(loader_path).unwrap();
+            assert_eq!(mapped_module_path(&process, module).unwrap(), expected);
+        }
+        assert!(mapped_module_path(&process, HMODULE::default()).is_err());
+    }
 
     // cargo test test_enum_processes -- --nocapture
     #[test]
