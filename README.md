@@ -36,7 +36,13 @@ Options:
 
 Inaccessible or exited processes are silently skipped during scanning, including when running as administrator. Results list the owners Locksmith could identify.
 
-Exit codes: `0` scan completed, `1` operation failed, `2` an entire scan method was unavailable or arguments were invalid.
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Scan completed. |
+| `1` | Operation failed. |
+| `2` | An entire scan method was unavailable, or arguments were invalid. |
 
 ### 📝 Examples
 
