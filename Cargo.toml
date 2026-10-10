@@ -17,22 +17,25 @@ name = "locksmith"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.98"
-clap = { version = "4.5.38", features = ["derive"] }
-log = "0.4.27"
-colored = "3.0.0"
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+colored = "3.1.1"
 
 [dependencies.windows]
-version = "0.61.1"
+version = "0.62.2"
 features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_System",
     "Wdk_Foundation",
     "Win32_System_Threading",
     "Wdk_System",
     "Wdk_System_SystemInformation",
+    "Wdk_Storage_FileSystem",
     "Win32_System_WindowsProgramming",
     "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_Security",
 ]
