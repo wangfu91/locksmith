@@ -68,7 +68,10 @@ pub fn is_same_or_ancestor_of(reference_path: &str, subject_path: &str) -> bool 
     // and subject_path must start with reference_path (case-insensitive).
     if sub_len > ref_len {
         // Check if subject_path starts with reference_path (case-insensitive)
-        if !subject_path[..ref_len].eq_ignore_ascii_case(reference_path) {
+        if !subject_path
+            .get(..ref_len)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(reference_path))
+        {
             return false;
         }
 
@@ -92,6 +95,19 @@ pub fn is_same_or_ancestor_of(reference_path: &str, subject_path: &str) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unrelated_unicode_prefix_does_not_panic() {
+        assert!(!is_same_or_ancestor_of(r"C:\a", r"C:\你好\b"));
+        assert!(!is_same_or_ancestor_of(r"C:\ab", r"C:\😀\b"));
+    }
+
+    #[test]
+    fn unicode_paths_match_at_valid_boundaries() {
+        assert!(is_same_or_ancestor_of(r"C:\你好", r"C:\你好"));
+        assert!(is_same_or_ancestor_of(r"C:\你好", r"C:\你好\b"));
+        assert!(!is_same_or_ancestor_of(r"C:\你", r"C:\你好\b"));
+    }
 
     #[test]
     fn test_is_same_or_ancestor_of_exact_match() {
