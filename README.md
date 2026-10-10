@@ -1,8 +1,6 @@
 # Locksmith 🔒 [![Crates.io](https://img.shields.io/crates/v/win-locksmith.svg)](https://crates.io/crates/win-locksmith) [![Downloads](https://img.shields.io/crates/d/win-locksmith.svg)](https://crates.io/crates/win-locksmith) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Windows utility to find out which processes are locking your files.
-
-Ever wondered why you can't delete or modify a file? Locksmith will help you identify the processes that are holding onto your files.
+A Windows command-line utility that identifies processes using a file or directory, helping you investigate why it cannot be deleted or modified.
 
 ## ✨ Features
 
@@ -13,13 +11,15 @@ Ever wondered why you can't delete or modify a file? Locksmith will help you ide
 
 ## 📦 Installation
 
+Locksmith runs on Windows. Installing with Cargo requires [Rust and Cargo](https://www.rust-lang.org/tools/install).
+
 ```sh
 cargo install win-locksmith
 ```
 
 ## 🚀 Usage
 
-```sh
+```text
 Usage: locksmith.exe [OPTIONS] <PATH>
 
 Arguments:
@@ -34,7 +34,7 @@ Options:
           Print help (see a summary with '-h')
 ```
 
-Inaccessible or exited processes are silently skipped during scanning, including when running as administrator. Results list the owners Locksmith could identify.
+Processes that cannot be accessed or have already exited are silently skipped, even when running as administrator. Results include only the processes Locksmith could identify; an empty result does not guarantee that the path is unused.
 
 ### Exit codes
 
@@ -47,6 +47,7 @@ Inaccessible or exited processes are silently skipped during scanning, including
 ### 📝 Examples
 
 Finding processes locking a file:
+
 ```powershell
 > locksmith "C:\Users\username\Desktop\important.txt"
 Found 2 locker(s):
@@ -60,8 +61,24 @@ name: explorer.exe
 path: C:\Windows\explorer.exe
 ```
 
+Scanning a directory and the files below it:
+
+```powershell
+locksmith "C:\Users\username\Desktop\my-folder"
+```
+
+Forcefully terminating processes locking a file (requires confirmation):
+
+```powershell
+locksmith --kill "C:\Users\username\Desktop\important.txt"
+```
+
+**Warning:** Forcefully terminating processes can cause unsaved work to be lost.
+
 ## 🛠️ Building from Source
+
 On Windows:
+
 ```sh
 git clone https://github.com/wangfu91/locksmith
 cd locksmith
@@ -78,5 +95,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 🙏 Attribution
 
-This project is a Rust port of the PowerToys's FileLockSmith module.
-The original implementation is in C++ and can be found here: https://github.com/microsoft/PowerToys/tree/main/src/modules/FileLocksmith.
+This project is a Rust port of the [File Locksmith module in Microsoft PowerToys](https://github.com/microsoft/PowerToys/tree/main/src/modules/FileLocksmith), originally implemented in C++.
