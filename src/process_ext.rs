@@ -1,6 +1,10 @@
 use anyhow::{Context, anyhow};
 use std::{
-    collections::HashSet, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, rc::Rc,
+    collections::HashSet,
+    ffi::OsString,
+    os::windows::ffi::OsStringExt,
+    path::{Path, PathBuf},
+    rc::Rc,
 };
 use windows::{
     Win32::{
@@ -177,7 +181,7 @@ fn collect_snapshot(
 
 pub fn enum_process_modules(
     process: &Process,
-    matches: impl FnMut(&PathBuf) -> bool,
+    matches: impl FnMut(&Path) -> bool,
 ) -> anyhow::Result<ModuleScan> {
     let modules = query_modules(|buffer| {
         let mut needed = 0;
@@ -203,7 +207,7 @@ pub fn enum_process_modules(
 fn collect_module_paths(
     modules: impl IntoIterator<Item = HMODULE>,
     mut query: impl FnMut(HMODULE) -> anyhow::Result<PathBuf>,
-    mut matches: impl FnMut(&PathBuf) -> bool,
+    mut matches: impl FnMut(&Path) -> bool,
 ) -> ModuleScan {
     let mut scan = ModuleScan {
         matched: false,
@@ -514,7 +518,7 @@ mod tests {
                 2 => anyhow::bail!("module unloaded"),
                 number => Ok(PathBuf::from(format!("module{number}.dll"))),
             },
-            |path| path == &PathBuf::from("module3.dll"),
+            |path| path == Path::new("module3.dll"),
         );
         assert!(scan.matched);
         assert_eq!(scan.diagnostics.failed_operations, 1);

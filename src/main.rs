@@ -24,7 +24,7 @@ mod wide_query;
     long_about = "A Windows utility to find out which processes are using your files"
 )]
 struct Cli {
-    /// Path to the file you want to check for locks
+    /// File or directory to check for processes using it
     #[arg(required = true)]
     path: PathBuf,
 
@@ -289,5 +289,21 @@ mod tests {
         }
         assert_eq!(scan_status(false), std::process::ExitCode::SUCCESS);
         assert_eq!(scan_status(true), std::process::ExitCode::from(2));
+    }
+
+    #[test]
+    fn confirmation_io_failures_are_propagated() {
+        let invalid_utf8 = [0xff, b'\n'];
+        assert!(confirm_termination(&mut io::Cursor::new(invalid_utf8), &mut Vec::new()).is_err());
+        struct BrokenOutput;
+        impl Write for BrokenOutput {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed output"))
+            }
+        }
+        assert!(confirm_termination(&mut io::Cursor::new("y\n"), &mut BrokenOutput).is_err());
     }
 }
