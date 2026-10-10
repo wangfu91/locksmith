@@ -32,141 +32,131 @@ struct Cli {
     kill: bool,
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    match run(&Cli::parse()) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: &Cli) -> anyhow::Result<std::process::ExitCode> {
     let start = Instant::now();
-    let cli = Cli::parse();
-    let find_result = find_locker(&cli);
-    let elapsed = start.elapsed();
-
-    match find_result {
-        Ok(scan) => {
-            let results = scan.processes;
-            if scan.diagnostics.failed_operations > 0 {
-                eprintln!(
-                    "Warning: {} query operation(s) failed; scan results may be incomplete.",
-                    scan.diagnostics.failed_operations
-                );
-                for example in scan.diagnostics.examples {
-                    eprintln!("  {example}");
-                }
-            }
-            if results.is_empty() {
-                eprintln!("No locker found");
-            } else {
-                println!(
-                    "Found {} locker(s) in {:.2}s:\n",
-                    results.len(),
-                    elapsed.as_secs_f64()
-                );
-                for result in results.values() {
-                    println!("pid: {}", result.pid);
-                    println!("name: {}", result.name.to_string_lossy());
-                    println!("path: {}", result.path.display());
-                    println!();
-                }
-
-                if cli.kill {
-                    println!(
-                        "{}",
-                        "WARNING: You are about to attempt to KILL the process(es) listed above."
-                            .bold()
-                            .yellow()
-                    );
-                    println!(
-                        "{}",
-                        "This is a DESTRUCTIVE and UNRECOVERABLE operation that could lead to data loss or system instability."
-                            .bold()
-                            .red()
-                    );
-                    print!(
-                        "{} ",
-                        "Are you absolutely sure you want to proceed? (y/N):"
-                            .bold()
-                            .yellow()
-                    );
-                    io::stdout()
-                        .flush()
-                        .context("Failed to flush stdout")
-                        .unwrap_or_else(|e| eprintln!("Error flushing stdout: {e}"));
-
-                    let mut confirmation = String::new();
-                    match io::stdin().read_line(&mut confirmation) {
-                        Ok(_) => {
-                            if confirmation.trim().eq_ignore_ascii_case("y") {
-                                println!("Proceeding to kill processes...");
-                                match kill_processes(&results) {
-                                    Ok(killed_count) => {
-                                        if killed_count > 0 {
-                                            println!(
-                                                "Successfully attempted to kill {killed_count} process(es)."
-                                            );
-                                        } else {
-                                            println!("No processes were targeted or killed.");
-                                        }
-                                        if killed_count < results.len() {
-                                            println!(
-                                                "{}",
-                                                "Note: Some processes might not have been killed due to errors, lack of permissions, or if they already exited."
-                                                .yellow()
-                                            );
-                                        }
-                                    }
-                                    Err(e) => eprintln!(
-                                        "An error occurred during the kill process: {e:?}"
-                                    ),
-                                }
-                            } else {
-                                println!("Operation cancelled by user.");
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to read user input: {e:?}. Operation cancelled.");
-                        }
-                    }
-                }
-            }
-        }
-        Err(err) => {
-            eprintln!("find_locker failed, err: {err:?}");
-        }
-    }
-}
-
-fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usize> {
-    let mut killed_count = 0;
-    if processes.is_empty() {
-        println!("No processes to kill.");
-        return Ok(0);
-    }
-
-    println!(
-        "{}",
-        "IMPORTANT: Attempting to terminate processes. This can have unintended consequences."
-            .bold()
-            .red()
-    );
-
-    for (pid, process_info) in processes {
-        println!(
-            "Attempting to kill process: PID {}, Name: '{}', Path: '{}'",
-            process_info.pid,
-            process_info.name.to_string_lossy(),
-            process_info.path.display()
+    let scan = find_locker(cli)?;
+    let partial = scan.diagnostics.failed_operations > 0;
+    if partial {
+        eprintln!(
+            "Warning: {} query operation(s) failed; scan results may be incomplete.",
+            scan.diagnostics.failed_operations
         );
-        match process_ext::kill_process_by_pid(*pid) {
-            Ok(_) => {
-                println!("Successfully sent termination signal to process PID {pid}.");
-                killed_count += 1;
+        for example in &scan.diagnostics.examples {
+            eprintln!("  {example}");
+        }
+    }
+    if scan.processes.is_empty() {
+        eprintln!(
+            "No locker found{}",
+            if partial {
+                " in the accessible results"
+            } else {
+                ""
             }
-            Err(e) => {
-                eprintln!("Failed to kill process PID {pid}: {e:?}");
-                // Ignore the error and continue
+        );
+    } else {
+        println!(
+            "Found {} locker(s) in {:.2}s:\n",
+            scan.processes.len(),
+            start.elapsed().as_secs_f64()
+        );
+        let mut results: Vec<_> = scan.processes.values().collect();
+        results.sort_by_key(|result| result.pid);
+        for result in results {
+            println!(
+                "pid: {}\nname: {}\npath: {}\n",
+                result.pid,
+                result.name.to_string_lossy(),
+                result.path.display()
+            );
+        }
+        if cli.kill {
+            println!(
+                "{}",
+                "WARNING: Forcefully terminating these processes can cause data loss."
+                    .bold()
+                    .yellow()
+            );
+            if confirm_termination(&mut io::stdin().lock(), &mut io::stdout().lock())? {
+                let report = kill_processes(&scan.processes);
+                for (pid, error) in &report.failures {
+                    eprintln!("Failed to terminate PID {pid}: {error}");
+                }
+                println!(
+                    "Termination requested successfully for {} process(es).",
+                    report.succeeded
+                );
+                anyhow::ensure!(
+                    report.failures.is_empty(),
+                    "Failed to terminate {} process(es)",
+                    report.failures.len()
+                );
+            } else {
+                println!("Operation cancelled by user.");
             }
         }
     }
-    Ok(killed_count)
+    Ok(scan_status(partial))
 }
 
+fn scan_status(partial: bool) -> std::process::ExitCode {
+    if partial {
+        std::process::ExitCode::from(2)
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
+}
+
+fn confirm_termination(
+    input: &mut impl io::BufRead,
+    output: &mut impl Write,
+) -> anyhow::Result<bool> {
+    write!(output, "Proceed with termination? (y/N): ")?;
+    output
+        .flush()
+        .context("Failed to flush the confirmation prompt")?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .context("Failed to read confirmation")?;
+    Ok(answer.trim().eq_ignore_ascii_case("y"))
+}
+
+#[derive(Default)]
+struct KillReport {
+    succeeded: usize,
+    failures: Vec<(u32, String)>,
+}
+
+fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> KillReport {
+    terminate_all(processes.values(), |process| {
+        process_ext::kill_process_by_pid(process.pid)
+    })
+}
+
+fn terminate_all<'a>(
+    processes: impl IntoIterator<Item = &'a ProcessResult>,
+    mut terminate: impl FnMut(&ProcessResult) -> anyhow::Result<()>,
+) -> KillReport {
+    let mut report = KillReport::default();
+    for process in processes {
+        match terminate(process) {
+            Ok(()) => report.succeeded += 1,
+            Err(error) => report.failures.push((process.pid, format!("{error:#}"))),
+        }
+    }
+    report
+}
 struct ScanResult {
     processes: HashMap<u32, ProcessResult>,
     diagnostics: diagnostics::Diagnostics,
@@ -240,4 +230,44 @@ struct ProcessResult {
     pid: u32,
     name: OsString,
     path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn termination_summary_keeps_all_failures_and_successes() {
+        let processes: Vec<_> = [17, 42, 99]
+            .into_iter()
+            .map(|pid| ProcessResult {
+                pid,
+                name: OsString::from("test"),
+                path: PathBuf::from("test"),
+            })
+            .collect();
+        let mut visited = Vec::new();
+        let report = terminate_all(&processes, |process| {
+            visited.push(process.pid);
+            if process.pid == 42 {
+                anyhow::bail!("access denied");
+            }
+            Ok(())
+        });
+        assert_eq!(visited, [17, 42, 99]);
+        assert_eq!(report.succeeded, 2);
+        assert_eq!(report.failures, [(42, "access denied".into())]);
+    }
+
+    #[test]
+    fn confirmation_defaults_to_no_and_requires_explicit_yes() {
+        for (answer, expected) in [("", false), ("n\n", false), ("yes\n", false), ("Y\n", true)] {
+            assert_eq!(
+                confirm_termination(&mut io::Cursor::new(answer), &mut Vec::new()).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(scan_status(false), std::process::ExitCode::SUCCESS);
+        assert_eq!(scan_status(true), std::process::ExitCode::from(2));
+    }
 }
