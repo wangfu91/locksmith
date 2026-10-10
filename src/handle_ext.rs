@@ -40,6 +40,7 @@ pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<HandleScan> {
     let target_value = target.handle().0 as usize;
     let file_type = file_object_type(handle_entries(&buffer)?, own_pid, target_value);
     let mut cache = HashMap::new();
+    let mut matched = std::collections::HashSet::new();
     let mut scan = HandleScan {
         handles: Vec::new(),
         diagnostics: Diagnostics::default(),
@@ -56,11 +57,18 @@ pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<HandleScan> {
                 .record("Handle table contains an invalid process ID");
             continue;
         };
+        if matched.contains(&pid) {
+            continue;
+        }
         let Some(process) = cached_process(&mut cache, pid, kill, &mut scan.diagnostics) else {
             continue;
         };
         match get_handle_info(entry, process, file_type.is_some()) {
-            Ok(Some(info)) => scan.handles.push(info),
+            Ok(Some(info)) if target.matches(&info.nt_path) => {
+                matched.insert(pid);
+                scan.handles.push(info);
+            }
+            Ok(Some(_)) => {}
             Ok(None) => {}
             Err(error) => scan
                 .diagnostics
@@ -319,16 +327,23 @@ mod tests {
     // cargo test test_enum_handles -- --nocapture
     #[test]
     fn test_enum_handles() {
-        let target = Target::open(std::env::current_exe().unwrap()).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let held = std::fs::File::open(&executable).unwrap();
+        let target = Target::open(&executable).unwrap();
         let handle_infos = enum_handles(false, &target).unwrap().handles;
-        assert!(!handle_infos.is_empty());
-
-        for handle_info in handle_infos {
-            println!(
-                "pid={}, nt_path={}",
-                handle_info.process.pid,
-                handle_info.nt_path.display()
-            );
-        }
+        assert!(
+            handle_infos
+                .iter()
+                .any(|info| info.process.pid == std::process::id())
+        );
+        assert!(
+            handle_infos
+                .iter()
+                .all(|info| target.matches(&info.nt_path))
+        );
+        let unique: std::collections::HashSet<_> =
+            handle_infos.iter().map(|info| info.process.pid).collect();
+        assert_eq!(unique.len(), handle_infos.len());
+        drop(held);
     }
 }

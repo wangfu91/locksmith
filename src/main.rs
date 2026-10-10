@@ -180,68 +180,54 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     let target = path_ext::Target::open(reference_path)
         .with_context(|| "Failed to convert Win32 path to NT path")?;
 
-    let mut process_results = HashMap::<u32, ProcessResult>::new();
+    let mut matches = HashMap::<u32, Rc<process_ext::Process>>::new();
     let mut diagnostics = diagnostics::Diagnostics::default();
-
-    let handle_infos = match handle_ext::enum_handles(cli.kill, &target) {
+    match handle_ext::enum_handles(cli.kill, &target) {
         Ok(scan) => {
             diagnostics.merge(scan.diagnostics);
-            scan.handles
-        }
-        Err(error) => {
-            diagnostics.record(format!("Handle enumeration failed: {error:#}"));
-            Vec::new()
-        }
-    };
-
-    for handle_info in handle_infos {
-        if target.matches(&handle_info.nt_path) {
-            let process = handle_info.process;
-            let pid = process.pid;
-            let path = process
-                .image_path()
-                .unwrap_or_else(|_| PathBuf::from("unknown"));
-            let name = path.file_name().unwrap_or_default().to_owned();
-            let process_result = ProcessResult {
-                pid,
-                name,
-                path,
-                process,
-            };
-            process_results.insert(pid, process_result);
-        }
-    }
-
-    let proces_infos = match process_ext::enum_processes(cli.kill) {
-        Ok(scan) => {
-            diagnostics.merge(scan.diagnostics);
-            scan.processes
-        }
-        Err(error) => {
-            diagnostics.record(format!("Process enumeration failed: {error:#}"));
-            Vec::new()
-        }
-    };
-    for process_info in proces_infos {
-        for module in &process_info.modules {
-            if target.matches(module) {
-                let process_result = ProcessResult {
-                    process: Rc::clone(&process_info.process),
-                    pid: process_info.pid,
-                    name: process_info.process_name.clone(),
-                    path: process_info.process_full_path.clone(),
-                };
-                process_results.insert(process_info.pid, process_result);
+            for info in scan.handles {
+                matches.entry(info.process.pid).or_insert(info.process);
             }
         }
+        Err(error) => diagnostics.record(format!("Handle enumeration failed: {error:#}")),
     }
-
+    let already_matched = matches.keys().copied().collect();
+    match process_ext::scan_process_modules(&target, &already_matched, cli.kill) {
+        Ok(scan) => {
+            diagnostics.merge(scan.diagnostics);
+            for process in scan.processes {
+                matches.entry(process.pid).or_insert(process);
+            }
+        }
+        Err(error) => diagnostics.record(format!("Process enumeration failed: {error:#}")),
+    }
     Ok(ScanResult {
-        processes: process_results,
+        processes: describe_matches(matches, |process| process.image_path()),
         diagnostics,
     })
 }
 
+fn describe_matches(
+    matches: HashMap<u32, Rc<process_ext::Process>>,
+    mut describe: impl FnMut(&process_ext::Process) -> anyhow::Result<PathBuf>,
+) -> HashMap<u32, ProcessResult> {
+    matches
+        .into_iter()
+        .map(|(pid, process)| {
+            let path = describe(&process).unwrap_or_else(|_| PathBuf::from("unknown"));
+            let name = path.file_name().unwrap_or_default().to_owned();
+            (
+                pid,
+                ProcessResult {
+                    pid,
+                    process,
+                    name,
+                    path,
+                },
+            )
+        })
+        .collect()
+}
 #[derive(Debug)]
 struct ProcessResult {
     process: Rc<process_ext::Process>,
@@ -253,6 +239,30 @@ struct ProcessResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_metadata_failure_preserves_confirmed_match() {
+        let process = Rc::new(
+            process_ext::Process::open(
+                std::process::id(),
+                windows::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+            )
+            .unwrap(),
+        );
+        let mut matches = HashMap::new();
+        matches.entry(process.pid).or_insert(Rc::clone(&process));
+        matches.entry(process.pid).or_insert(Rc::clone(&process));
+        let mut calls = 0;
+        let results = describe_matches(matches, |_| {
+            calls += 1;
+            anyhow::bail!("process exited");
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[&process.pid].path, PathBuf::from("unknown"));
+        assert!(Rc::ptr_eq(&process, &results[&process.pid].process));
+    }
 
     #[test]
     fn termination_summary_keeps_all_failures_and_successes() {

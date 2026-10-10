@@ -1,5 +1,7 @@
 use anyhow::{Context, anyhow};
-use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, rc::Rc};
+use std::{
+    collections::HashSet, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, rc::Rc,
+};
 use windows::{
     Win32::{
         Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, HMODULE},
@@ -23,7 +25,7 @@ use windows::{
     core::{Error, Owned, PWSTR},
 };
 
-use crate::{diagnostics::Diagnostics, wide_query};
+use crate::{diagnostics::Diagnostics, path_ext::Target, wide_query};
 #[cfg(test)]
 use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
 
@@ -94,67 +96,52 @@ impl Process {
         Ok(())
     }
 }
-pub struct ProcessInfo {
-    pub process: Rc<Process>,
-    pub pid: u32,
-    pub process_name: OsString,
-    pub process_full_path: PathBuf,
-    pub modules: Vec<PathBuf>,
-}
-
 pub struct ProcessScan {
-    pub processes: Vec<ProcessInfo>,
+    pub processes: Vec<Rc<Process>>,
     pub diagnostics: Diagnostics,
 }
 
 pub struct ModuleScan {
-    pub paths: Vec<PathBuf>,
+    pub matched: bool,
     pub diagnostics: Diagnostics,
 }
 
-pub fn enum_processes(kill: bool) -> anyhow::Result<ProcessScan> {
-    let mut diagnostics = Diagnostics::default();
-    let mut process_info_collection = Vec::<ProcessInfo>::new();
+pub fn scan_process_modules(
+    target: &Target,
+    already_matched: &HashSet<u32>,
+    kill: bool,
+) -> anyhow::Result<ProcessScan> {
+    let mut scan = ProcessScan {
+        processes: Vec::new(),
+        diagnostics: Diagnostics::default(),
+    };
     for entry in process_snapshot()? {
         let pid = entry.th32ProcessID;
+        if pid == 0 || already_matched.contains(&pid) {
+            continue;
+        }
         let process = match Process::open(pid, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, kill) {
             Ok(process) => Rc::new(process),
             Err(error) => {
-                diagnostics.record(format!("PID {pid}: process query failed: {error:#}"));
+                scan.diagnostics
+                    .record(format!("PID {pid}: process query failed: {error:#}"));
                 continue;
             }
         };
-        let process_full_path = process
-            .image_path()
-            .unwrap_or_else(|_| PathBuf::from("unknown"));
-        let process_name = process_full_path.file_name().unwrap_or_default().to_owned();
-        let module_nt_paths = match enum_process_modules(&process) {
-            Ok(scan) => {
-                diagnostics.merge(scan.diagnostics);
-                scan.paths
+        match enum_process_modules(&process, |path| target.matches(path)) {
+            Ok(modules) => {
+                scan.diagnostics.merge(modules.diagnostics);
+                if modules.matched {
+                    scan.processes.push(process);
+                }
             }
-            Err(error) => {
-                diagnostics.record(format!("PID {pid}: module scan failed: {error:#}"));
-                Vec::new()
-            }
-        };
-        let process_info = ProcessInfo {
-            process,
-            pid,
-            process_name,
-            process_full_path,
-            modules: module_nt_paths,
-        };
-
-        process_info_collection.push(process_info);
+            Err(error) => scan
+                .diagnostics
+                .record(format!("PID {pid}: module scan failed: {error:#}")),
+        }
     }
-
-    Ok(ProcessScan {
-        processes: process_info_collection,
-        diagnostics,
-    })
+    Ok(scan)
 }
-
 pub fn process_snapshot() -> anyhow::Result<Vec<PROCESSENTRY32W>> {
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? };
     // SAFETY: the successful snapshot call creates a fresh owned handle.
@@ -186,7 +173,10 @@ fn collect_snapshot(
     }
 }
 
-pub fn enum_process_modules(process: &Process) -> anyhow::Result<ModuleScan> {
+pub fn enum_process_modules(
+    process: &Process,
+    matches: impl FnMut(&PathBuf) -> bool,
+) -> anyhow::Result<ModuleScan> {
     let modules = query_modules(|buffer| {
         let mut needed = 0;
         // SAFETY: the live process handle and typed writable module array are valid.
@@ -201,22 +191,30 @@ pub fn enum_process_modules(process: &Process) -> anyhow::Result<ModuleScan> {
         Ok(needed as usize)
     })
     .context("EnumProcessModules failed")?;
-    Ok(collect_module_paths(modules, |module| {
-        mapped_module_path(&process.handle, module)
-    }))
+    Ok(collect_module_paths(
+        modules,
+        |module| mapped_module_path(&process.handle, module),
+        matches,
+    ))
 }
 
 fn collect_module_paths(
     modules: impl IntoIterator<Item = HMODULE>,
     mut query: impl FnMut(HMODULE) -> anyhow::Result<PathBuf>,
+    mut matches: impl FnMut(&PathBuf) -> bool,
 ) -> ModuleScan {
     let mut scan = ModuleScan {
-        paths: Vec::new(),
+        matched: false,
         diagnostics: Diagnostics::default(),
     };
     for module in modules {
         match query(module) {
-            Ok(path) => scan.paths.push(path),
+            Ok(path) => {
+                if matches(&path) {
+                    scan.matched = true;
+                    break;
+                }
+            }
             Err(error) => scan
                 .diagnostics
                 .record(format!("Module path query failed: {error:#}")),
@@ -374,6 +372,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn module_queries_stop_after_first_confirmed_match() {
+        let modules = [
+            HMODULE(std::ptr::without_provenance_mut(17)),
+            HMODULE(std::ptr::without_provenance_mut(42)),
+        ];
+        let mut queried = Vec::new();
+        let scan = collect_module_paths(
+            modules,
+            |module| {
+                queried.push(module.0 as usize);
+                Ok(PathBuf::from("target.dll"))
+            },
+            |_| true,
+        );
+        assert!(scan.matched);
+        assert_eq!(queried, [17]);
+        assert_eq!(scan.diagnostics.failed_operations, 0);
+    }
+
+    #[test]
     fn termination_uses_retained_handle_not_a_pid_lookup() {
         use std::{
             os::windows::process::CommandExt,
@@ -424,14 +442,15 @@ mod tests {
             HMODULE(std::ptr::without_provenance_mut(2)),
             HMODULE(std::ptr::without_provenance_mut(3)),
         ];
-        let scan = collect_module_paths(modules, |module| match module.0 as usize {
-            2 => anyhow::bail!("module unloaded"),
-            number => Ok(PathBuf::from(format!("module{number}.dll"))),
-        });
-        assert_eq!(
-            scan.paths,
-            [PathBuf::from("module1.dll"), PathBuf::from("module3.dll")]
+        let scan = collect_module_paths(
+            modules,
+            |module| match module.0 as usize {
+                2 => anyhow::bail!("module unloaded"),
+                number => Ok(PathBuf::from(format!("module{number}.dll"))),
+            },
+            |path| path == &PathBuf::from("module3.dll"),
         );
+        assert!(scan.matched);
         assert_eq!(scan.diagnostics.failed_operations, 1);
     }
 
@@ -529,20 +548,14 @@ mod tests {
         assert!(mapped_module_path(&process, HMODULE::default()).is_err());
     }
 
-    // cargo test test_enum_processes -- --nocapture
     #[test]
-    fn test_enum_processes() {
-        let process_infos = enum_processes(false).unwrap().processes;
-        assert!(!process_infos.is_empty());
-
-        for process_info in process_infos {
-            println!("pid: {}", process_info.pid);
-            println!("name: {}", process_info.process_name.to_string_lossy());
-            println!("path: {}", process_info.process_full_path.display());
-            for module in process_info.modules {
-                println!("\tmodule: {}", module.display());
-            }
-            println!();
-        }
+    fn live_module_scan_finds_this_executable() {
+        let target = Target::open(std::env::current_exe().unwrap()).unwrap();
+        let scan = scan_process_modules(&target, &HashSet::new(), false).unwrap();
+        assert!(
+            scan.processes
+                .iter()
+                .any(|process| process.pid == std::process::id())
+        );
     }
 }
