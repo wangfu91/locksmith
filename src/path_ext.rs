@@ -56,46 +56,45 @@ pub fn win32_path_to_nt_path(win32_path: impl AsRef<str>) -> anyhow::Result<Stri
 /// `true` if `reference_path` is the same as or an ancestor of `subject_path`,
 /// `false` otherwise. On Windows, the comparison is case-insensitive.
 pub fn is_same_or_ancestor_of(reference_path: &str, subject_path: &str) -> bool {
-    let ref_len = reference_path.len();
-    let sub_len = subject_path.len();
-
-    // Case 1: Exact match (case-insensitive)
-    if ref_len == sub_len {
-        return reference_path.eq_ignore_ascii_case(subject_path);
-    }
-
-    // Case 2: reference_path might be an ancestor.
-    // For reference_path to be an ancestor, subject_path must be longer,
-    // and subject_path must start with reference_path (case-insensitive).
-    if sub_len > ref_len {
-        // Check if subject_path starts with reference_path (case-insensitive)
-        if !subject_path
-            .get(..ref_len)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(reference_path))
-        {
-            return false;
-        }
-
-        // If reference_path ends with a path separator, then subject_path starting with it is enough.
-        // e.g., ref = "C:\foo\", sub = "C:\foo\bar.txt"
-        if reference_path.ends_with('\\') {
-            // Check for trailing backslash
-            return true;
-        } else {
-            // If reference_path does not end with a separator,
-            // the character in subject_path immediately after the reference_path prefix must be a separator.
-            // e.g., ref = "C:\foo", sub = "C:\foo\bar.txt"
-            return subject_path.as_bytes().get(ref_len) == Some(&b'\\'); // Check for backslash at join point
-        }
-    }
-
-    // Otherwise, reference_path is not the same or an ancestor (e.g., reference_path is longer, or completely different)
-    false
+    let reference: Vec<_> = reference_path.encode_utf16().collect();
+    let subject: Vec<_> = subject_path.encode_utf16().collect();
+    matches_wide(&reference, &subject)
 }
 
+pub fn matches_wide(reference: &[u16], subject: &[u16]) -> bool {
+    if reference.is_empty() {
+        return subject.is_empty();
+    }
+    let Some(prefix) = subject.get(..reference.len()) else {
+        return false;
+    };
+    // The binding represents the lengths as i32.
+    if reference.len() > i32::MAX as usize {
+        return false;
+    }
+    // SAFETY: the slices provide readable UTF-16 units and checked API lengths.
+    if unsafe { windows::Win32::Globalization::CompareStringOrdinal(reference, prefix, true) }
+        != windows::Win32::Globalization::CSTR_EQUAL
+    {
+        return false;
+    }
+    reference.len() == subject.len()
+        || reference.last() == Some(&0x5c)
+        || subject.get(reference.len()) == Some(&0x5c)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_unicode_case_and_component_boundaries() {
+        assert!(is_same_or_ancestor_of(
+            r"C:\Ärger\ДАННЫЕ",
+            r"c:\ärger\данные\文件.txt"
+        ));
+        assert!(is_same_or_ancestor_of(r"C:\Ärger", r"C:\ärger"));
+        assert!(!is_same_or_ancestor_of(r"C:\Ärger", r"C:\ärgerlich\file"));
+    }
 
     #[test]
     fn unrelated_unicode_prefix_does_not_panic() {
