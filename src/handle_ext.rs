@@ -22,7 +22,7 @@ use windows::{
 };
 
 use crate::nt_ext;
-use crate::string_ext::ToString;
+use crate::string_ext;
 
 #[derive(Debug)]
 pub struct HandleInfo {
@@ -134,7 +134,7 @@ pub fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<b
         std::ptr::read_unaligned(buffer.as_ptr() as *const PUBLIC_OBJECT_TYPE_INFORMATION)
     };
 
-    let object_type_name = object_type_info.TypeName.to_string();
+    let object_type_name = string_ext::from_buffer(&buffer, object_type_info.TypeName)?;
     if object_type_name != "File" {
         return Ok(false);
     }
@@ -158,8 +158,8 @@ pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<Str
         std::ptr::read_unaligned(buffer.as_ptr() as *const OBJECT_NAME_INFORMATION)
     };
 
-    let object_name = object_name_info.Name.to_string();
-    Ok(object_name)
+    let object_name = string_ext::from_buffer(&buffer, object_name_info.Name)?;
+    Ok(object_name.to_string_lossy().into_owned())
 }
 
 #[repr(C)]
