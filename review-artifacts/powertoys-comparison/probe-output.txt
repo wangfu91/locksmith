@@ -1,6 +1,0 @@
-probe.cpp
-upstream process walker: records 1,2,3 -> 2,3 (first skipped, last retained)
-upstream long-path fallback calls current-process API: confirmed (mock)
-upstream EnumProcessModules failure leaks opened process handle: confirmed (mock)
-upstream prefix comparison is case-sensitive and boundary respected: confirmed
-MSVC native_handle after detach is null: confirmed (no thread termination)
