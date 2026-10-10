@@ -2,14 +2,50 @@ use anyhow::{Result, bail, ensure};
 use windows::{
     Wdk::{
         Foundation::{NtQueryObject, OBJECT_INFORMATION_CLASS},
+        Storage::FileSystem::{MEMORY_INFORMATION_CLASS, NtQueryVirtualMemory},
         System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS},
     },
     Win32::Foundation::{
         HANDLE, NTSTATUS, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL,
-        STATUS_INFO_LENGTH_MISMATCH,
+        STATUS_INFO_LENGTH_MISMATCH, UNICODE_STRING,
     },
     core::Owned,
 };
+
+/// Native equivalent of the mapped-file-name query, with a caller-sized buffer.
+/// Class 2 returns a UNICODE_STRING followed by its data (phnt ntmmapi.h).
+pub fn mapped_file_name(
+    process: &Owned<HANDLE>,
+    address: *const std::ffi::c_void,
+) -> Result<std::path::PathBuf> {
+    const MAPPED_FILENAME: MEMORY_INFORMATION_CLASS = MEMORY_INFORMATION_CLASS(2);
+    let buffer = query_buffer(512, 1024 * 1024, |buffer, needed| {
+        let mut length = 0usize;
+        // SAFETY: live process and output buffers; the remote address is queried,
+        // not dereferenced locally. The information class returns only name data.
+        let status = unsafe {
+            NtQueryVirtualMemory(
+                **process,
+                Some(address),
+                MAPPED_FILENAME,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                Some(&mut length),
+            )
+        };
+        *needed = u32::try_from(length).unwrap_or(u32::MAX);
+        status
+    })?;
+    ensure!(
+        buffer.len() >= std::mem::size_of::<UNICODE_STRING>(),
+        "Mapped filename header is truncated"
+    );
+    // SAFETY: a complete C header of integers and an opaque pointer is present.
+    let name = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast::<UNICODE_STRING>()) };
+    Ok(std::path::PathBuf::from(crate::string_ext::from_buffer(
+        &buffer, name,
+    )?))
+}
 
 pub fn nt_query_information_loop(class: SYSTEM_INFORMATION_CLASS) -> Result<Vec<u8>> {
     query_buffer(1024 * 1024, 128 * 1024 * 1024, |buffer, needed| {

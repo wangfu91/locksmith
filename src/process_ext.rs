@@ -4,7 +4,9 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, HMODULE},
+        Foundation::{
+            ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_NO_MORE_FILES, HANDLE, HMODULE,
+        },
         Security::{
             GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
             TokenUser,
@@ -259,12 +261,31 @@ fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Resul
         // rather than dereferencing it in this process. The output slice is valid.
         let length = unsafe { GetMappedFileNameW(**process, module.0, buffer) } as usize;
         if length == 0 {
-            return Err(Error::from_thread().into());
+            let error = Error::from_thread();
+            // Windows versions can report truncation as a zero-length failure,
+            // in addition to the documented full-buffer length return.
+            if error.code() == ERROR_INSUFFICIENT_BUFFER.into() {
+                return Ok(None);
+            }
+            return Err(error.into());
         }
         Ok((length < buffer.len()).then_some(length))
-    })
-    .context("GetMappedFileNameW failed")?;
-    Ok(PathBuf::from(OsString::from_wide(&buffer)))
+    });
+    match buffer {
+        Ok(units) => Ok(PathBuf::from(OsString::from_wide(&units))),
+        Err(error)
+            if error
+                .downcast_ref::<Error>()
+                .is_some_and(|error| error.code() == ERROR_MORE_DATA.into()) =>
+        {
+            // Some PSAPI implementations use a fixed internal name buffer even
+            // when the caller provides more space. Query that same mapping via
+            // NT instead; never fall back to opening a foreign filename.
+            crate::nt_ext::mapped_file_name(process, module.0)
+                .context("Native mapped filename query failed")
+        }
+        Err(error) => Err(error.context("GetMappedFileNameW failed")),
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +391,51 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_dll_path_is_complete_after_multiple_real_buffer_retries() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::{Win32::System::LibraryLoader::LoadLibraryW, core::HSTRING};
+        struct TestTree(PathBuf);
+        impl Drop for TestTree {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("locksmith-long-module-{}", std::process::id()));
+        // Ownership of cleanup begins only after creating a new, dedicated directory.
+        std::fs::create_dir(&root).unwrap();
+        let tree = TestTree(root);
+        let mut directory = tree.0.canonicalize().unwrap();
+        for index in 0..9 {
+            directory.push(format!("层级{index}-{}", "目录".repeat(35)));
+            std::fs::create_dir(&directory).unwrap();
+        }
+        let dll = directory.join(format!("locksmith-test-{}.dll", std::process::id()));
+        let source = PathBuf::from(std::env::var_os("WINDIR").unwrap())
+            .join("System32")
+            .join("version.dll");
+        // Load only a trusted local Windows DLL copied into our isolated test tree.
+        std::fs::copy(source, &dll).unwrap();
+        let raw = unsafe { LoadLibraryW(&HSTRING::from(dll.as_path())) }.unwrap();
+        // SAFETY: LoadLibraryW returned a new reference, released by Owned<HMODULE>.
+        let module = unsafe { Owned::new(raw) };
+        let process = Process::open(
+            std::process::id(),
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+            false,
+        )
+        .unwrap();
+        let mapped = mapped_module_path(&process.handle, *module).unwrap();
+        assert!(mapped.as_os_str().encode_wide().count() > 520);
+        let target = Target::open(&dll).unwrap();
+        assert!(target.matches(&mapped));
+        let scan = enum_process_modules(&process, |path| target.matches(path)).unwrap();
+        assert!(scan.matched);
+        drop(target);
+        drop(module);
+    }
 
     #[test]
     fn module_queries_stop_after_first_confirmed_match() {
@@ -544,8 +610,13 @@ mod tests {
             // This control explicitly opens our own known executable/DLL, not a foreign path.
             let expected = crate::path_ext::win32_path_to_nt_path(loader_path).unwrap();
             assert_eq!(mapped_module_path(&process, module).unwrap(), expected);
+            assert_eq!(
+                crate::nt_ext::mapped_file_name(&process, module.0).unwrap(),
+                expected
+            );
         }
         assert!(mapped_module_path(&process, HMODULE::default()).is_err());
+        assert!(crate::nt_ext::mapped_file_name(&process, std::ptr::null()).is_err());
     }
 
     #[test]
