@@ -12,14 +12,14 @@
                 "args": [
                     "build",
                     "--bin=locksmith",
-                    "--package=locksmith"
+                    "--package=win-locksmith"
                 ],
                 "filter": {
                     "name": "locksmith",
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["${input:targetPath}"],
             "cwd": "${workspaceFolder}"
         },
         {
@@ -31,7 +31,7 @@
                     "test",
                     "--no-run",
                     "--bin=locksmith",
-                    "--package=locksmith"
+                    "--package=win-locksmith"
                 ],
                 "filter": {
                     "name": "locksmith",
@@ -40,6 +40,13 @@
             },
             "args": [],
             "cwd": "${workspaceFolder}"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "targetPath",
+            "type": "promptString",
+            "description": "File or directory to scan"
         }
     ]
 }
