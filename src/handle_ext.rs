@@ -150,7 +150,7 @@ fn file_object_type(
 fn is_file_candidate(entry: SystemHandleTableEntryInfoEx, file_type: Option<u16>) -> bool {
     file_type.is_none_or(|index| entry.object_type_index == index)
 }
-pub fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<bool> {
+fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<bool> {
     let buffer = nt_ext::nt_query_object_loop(safe_file_handle, ObjectTypeInformation)?;
 
     let object_type_info = unsafe {
@@ -164,15 +164,7 @@ pub fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<b
     };
 
     let object_type_name = string_ext::from_buffer(&buffer, object_type_info.TypeName)?;
-    if object_type_name != "File" {
-        return Ok(false);
-    }
-    let file_type = unsafe { GetFileType(**safe_file_handle) };
-    if file_type != FILE_TYPE_DISK {
-        return Ok(false);
-    }
-
-    Ok(true)
+    Ok(object_type_name == "File")
 }
 
 pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<PathBuf> {
@@ -218,7 +210,7 @@ fn handle_entries(
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemHandleTableEntryInfoEx {
+struct SystemHandleTableEntryInfoEx {
     object: *mut ::core::ffi::c_void,
     unique_process_id: usize,
     handle_value: usize,

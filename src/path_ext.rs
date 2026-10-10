@@ -99,7 +99,7 @@ pub fn win32_path_to_nt_path(path: impl AsRef<Path>) -> anyhow::Result<PathBuf> 
 /// `true` if `reference_path` is the same as or an ancestor of `subject_path`,
 /// `false` otherwise. On Windows, the comparison is case-insensitive.
 #[cfg(test)]
-pub fn is_same_or_ancestor_of(
+fn is_same_or_ancestor_of(
     reference_path: impl AsRef<OsStr>,
     subject_path: impl AsRef<OsStr>,
 ) -> bool {
@@ -108,7 +108,7 @@ pub fn is_same_or_ancestor_of(
     matches_wide(&reference, &subject)
 }
 
-pub fn matches_wide(reference: &[u16], subject: &[u16]) -> bool {
+fn matches_wide(reference: &[u16], subject: &[u16]) -> bool {
     if reference.is_empty() {
         return subject.is_empty();
     }

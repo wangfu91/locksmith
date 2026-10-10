@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use std::{
     collections::HashSet,
     ffi::OsString,
@@ -11,10 +11,6 @@ use windows::{
         Foundation::{
             ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_NO_MORE_FILES, HANDLE, HMODULE,
         },
-        Security::{
-            GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
-            TokenUser,
-        },
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -22,9 +18,8 @@ use windows::{
             },
             ProcessStatus::{EnumProcessModules, GetMappedFileNameW},
             Threading::{
-                OpenProcess, OpenProcessToken, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-                PROCESS_VM_READ, QueryFullProcessImageNameW, TerminateProcess,
+                OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
+                PROCESS_TERMINATE, PROCESS_VM_READ, QueryFullProcessImageNameW, TerminateProcess,
             },
         },
     },
@@ -107,9 +102,9 @@ pub struct ProcessScan {
     pub diagnostics: Diagnostics,
 }
 
-pub struct ModuleScan {
-    pub matched: bool,
-    pub diagnostics: Diagnostics,
+struct ModuleScan {
+    matched: bool,
+    diagnostics: Diagnostics,
 }
 
 pub fn scan_process_modules(
@@ -148,7 +143,7 @@ pub fn scan_process_modules(
     }
     Ok(scan)
 }
-pub fn process_snapshot() -> anyhow::Result<Vec<PROCESSENTRY32W>> {
+fn process_snapshot() -> anyhow::Result<Vec<PROCESSENTRY32W>> {
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? };
     // SAFETY: the successful snapshot call creates a fresh owned handle.
     let snapshot = unsafe { Owned::new(raw) };
@@ -179,7 +174,7 @@ fn collect_snapshot(
     }
 }
 
-pub fn enum_process_modules(
+fn enum_process_modules(
     process: &Process,
     matches: impl FnMut(&Path) -> bool,
 ) -> anyhow::Result<ModuleScan> {
@@ -309,92 +304,10 @@ fn get_module_name(
     Ok(PathBuf::from(OsString::from_wide(&buffer)))
 }
 
-pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
-    let open_process_result = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) };
-    let process_handle = match open_process_result {
-        Ok(handle) => handle,
-        Err(err) => {
-            return Err(anyhow!("OpenProcess failed, pid: {}, error: {}", pid, err));
-        }
-    };
-
-    // SAFETY: OpenProcess returned a fresh handle owned exclusively here.
-    let safe_process = unsafe { Owned::new(process_handle) };
-
-    let mut token = Default::default();
-    unsafe { OpenProcessToken(*safe_process, TOKEN_QUERY, &mut token)? }
-    // SAFETY: successful OpenProcessToken returned a new owned token handle.
-    let safe_token = unsafe { Owned::new(token) };
-
-    // Get required buffer size
-    let mut token_size = 0u32;
-    if let Err(err) =
-        unsafe { GetTokenInformation(*safe_token, TokenUser, None, 0, &mut token_size) }
-        && err.code() != ERROR_INSUFFICIENT_BUFFER.into()
-    {
-        return Err(anyhow!("GetTokenInformation failed with error: {:?}", err));
-    }
-
-    // Allocate buffer and get token information
-    let mut token_buffer = vec![0u8; token_size as usize];
-    unsafe {
-        GetTokenInformation(
-            *safe_token,
-            TokenUser,
-            Some(token_buffer.as_mut_ptr() as _),
-            token_size,
-            &mut token_size,
-        )
-        .with_context(|| "GetTokenInformation failed")?
-    };
-    let token_user =
-        unsafe { std::ptr::read_unaligned(token_buffer.as_ptr() as *const TOKEN_USER) };
-    let psid = token_user.User.Sid;
-
-    // Get required buffer sizes for user and domain
-    let mut user_size = 0u32;
-    let mut domain_size = 0u32;
-    let mut sid_name_use = SID_NAME_USE::default();
-    if let Err(err) = unsafe {
-        LookupAccountSidW(
-            None,
-            psid,
-            None,
-            &mut user_size,
-            None,
-            &mut domain_size,
-            &mut sid_name_use,
-        )
-    } && err.code() != ERROR_INSUFFICIENT_BUFFER.into()
-    {
-        return Err(anyhow!("LookupAccountSidW failed with error: {:?}", err));
-    }
-
-    // Allocate buffers and get user and domain
-    let mut user_buffer = vec![0u16; user_size as usize];
-    let mut domain_buffer = vec![0u16; domain_size as usize];
-    unsafe {
-        LookupAccountSidW(
-            None,
-            psid,
-            Some(PWSTR(user_buffer.as_mut_ptr())),
-            &mut user_size,
-            Some(PWSTR(domain_buffer.as_mut_ptr())),
-            &mut domain_size,
-            &mut sid_name_use,
-        )
-        .with_context(|| "LookupAccountSidW failed")?
-    };
-
-    let user = String::from_utf16_lossy(&user_buffer[..user_size as usize]);
-    let domain = String::from_utf16_lossy(&domain_buffer[..domain_size as usize]);
-
-    Ok((user, domain))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
 
     #[test]
     fn mapped_dll_path_is_complete_after_multiple_real_buffer_retries() {
