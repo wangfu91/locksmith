@@ -2,8 +2,9 @@ use anyhow::Context;
 use clap::Parser;
 use colored::Colorize;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 mod handle_ext;
@@ -23,7 +24,7 @@ mod wide_query;
 struct Cli {
     /// Path to the file you want to check for locks
     #[arg(required = true)]
-    path: String,
+    path: PathBuf,
 
     /// Forcefully kill the processes locking the file (requires confirmation)
     #[arg(short = 'k', long, default_value_t = false)]
@@ -48,8 +49,8 @@ fn main() {
                 );
                 for result in results.values() {
                     println!("pid: {}", result.pid);
-                    println!("name: {}", result.name);
-                    println!("path: {}", result.path);
+                    println!("name: {}", result.name.to_string_lossy());
+                    println!("path: {}", result.path.display());
                     println!();
                 }
 
@@ -137,7 +138,9 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
     for (pid, process_info) in processes {
         println!(
             "Attempting to kill process: PID {}, Name: '{}', Path: '{}'",
-            process_info.pid, process_info.name, process_info.path
+            process_info.pid,
+            process_info.name.to_string_lossy(),
+            process_info.path.display()
         );
         match process_ext::kill_process_by_pid(*pid) {
             Ok(_) => {
@@ -156,12 +159,15 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
 fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
     let reference_path = &cli.path;
 
-    if reference_path.is_empty() {
+    if reference_path.as_os_str().is_empty() {
         return Err(anyhow::anyhow!("Path cannot be empty"));
     }
 
-    if !Path::new(reference_path).exists() {
-        return Err(anyhow::anyhow!("Path does not exist: {}", reference_path));
+    if !reference_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Path does not exist: {}",
+            reference_path.display()
+        ));
     }
 
     let nt_path = path_ext::win32_path_to_nt_path(reference_path)
@@ -175,9 +181,9 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
         if path_ext::is_same_or_ancestor_of(&nt_path, &handle_info.nt_path) {
             let pid = handle_info.pid;
             let name =
-                process_ext::pid_to_process_name(pid).unwrap_or_else(|_| "unknown".to_string());
+                process_ext::pid_to_process_name(pid).unwrap_or_else(|_| OsString::from("unknown"));
             let path = process_ext::pid_to_process_full_path(pid)
-                .unwrap_or_else(|_| "unknown".to_string());
+                .unwrap_or_else(|_| PathBuf::from("unknown"));
             let process_result = ProcessResult { pid, name, path };
             process_results.insert(pid, process_result);
         }
@@ -204,6 +210,6 @@ fn find_locker(cli: &Cli) -> anyhow::Result<HashMap<u32, ProcessResult>> {
 #[derive(Debug)]
 struct ProcessResult {
     pid: u32,
-    name: String,
-    path: String,
+    name: OsString,
+    path: PathBuf,
 }

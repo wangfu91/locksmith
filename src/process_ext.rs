@@ -1,4 +1,5 @@
 use anyhow::{Context, anyhow};
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 use windows::{
     Win32::{
         Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, HMODULE, MAX_PATH},
@@ -28,9 +29,9 @@ use crate::wide_query;
 
 pub struct ProcessInfo {
     pub pid: u32,
-    pub process_name: String,
-    pub process_full_path: String,
-    pub modules: Vec<String>,
+    pub process_name: OsString,
+    pub process_full_path: PathBuf,
+    pub modules: Vec<PathBuf>,
 }
 
 pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
@@ -42,10 +43,10 @@ pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
             .iter()
             .position(|&unit| unit == 0)
             .unwrap_or(entry.szExeFile.len());
-        let process_name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
+        let process_name = OsString::from_wide(&entry.szExeFile[..name_len]);
 
         let process_full_path =
-            pid_to_process_full_path(pid).unwrap_or_else(|_| "unknown".to_string());
+            pid_to_process_full_path(pid).unwrap_or_else(|_| PathBuf::from("unknown"));
 
         let module_nt_paths = enum_process_modules(pid).unwrap_or_else(|_| Vec::new());
         let process_info = ProcessInfo {
@@ -92,7 +93,7 @@ fn collect_snapshot(
     }
 }
 
-pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
+pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
     // https://learn.microsoft.com/en-us/windows/win32/psapi/enumerating-all-processes
     let process_handle =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
@@ -124,7 +125,7 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
     let size_of_single_module = std::mem::size_of::<HMODULE>() as u32;
     let module_count = size_needed / size_of_single_module;
 
-    let mut moudle_nt_path_collection = Vec::<String>::with_capacity(module_count as usize);
+    let mut moudle_nt_path_collection = Vec::<PathBuf>::with_capacity(module_count as usize);
 
     for i in 0..module_count {
         let module = unsafe {
@@ -140,7 +141,7 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
 }
 
 /// Ask for the existing mapping's name; never reopen a foreign loader path.
-fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Result<String> {
+fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Result<PathBuf> {
     let buffer = wide_query::query(|buffer| {
         // SAFETY: the process handle is live; the API queries the remote address,
         // rather than dereferencing it in this process. The output slice is valid.
@@ -151,13 +152,13 @@ fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Resul
         Ok((length < buffer.len()).then_some(length))
     })
     .context("GetMappedFileNameW failed")?;
-    Ok(String::from_utf16_lossy(&buffer))
+    Ok(PathBuf::from(OsString::from_wide(&buffer)))
 }
 
 fn get_module_name(
     safe_process_handle: &Owned<HANDLE>,
     module: Option<HMODULE>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<PathBuf> {
     let buffer = wide_query::query(|buffer| {
         let length =
             unsafe { GetModuleFileNameExW(Some(**safe_process_handle), module, buffer) } as usize;
@@ -167,7 +168,7 @@ fn get_module_name(
         Ok((length < buffer.len()).then_some(length))
     })
     .context("GetModuleFileNameExW failed")?;
-    Ok(String::from_utf16_lossy(&buffer))
+    Ok(PathBuf::from(OsString::from_wide(&buffer)))
 }
 
 pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
@@ -253,7 +254,7 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
     Ok((user, domain))
 }
 
-pub fn pid_to_process_name(pid: u32) -> anyhow::Result<String> {
+pub fn pid_to_process_name(pid: u32) -> anyhow::Result<OsString> {
     let process_handle = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
@@ -274,11 +275,11 @@ pub fn pid_to_process_name(pid: u32) -> anyhow::Result<String> {
         ));
     }
 
-    let process_name = String::from_utf16_lossy(&buffer[..actual_len as usize]);
+    let process_name = OsString::from_wide(&buffer[..actual_len as usize]);
     Ok(process_name)
 }
 
-pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<String> {
+pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<PathBuf> {
     let process_handle = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
@@ -384,10 +385,10 @@ mod tests {
 
         for process_info in process_infos {
             println!("pid: {}", process_info.pid);
-            println!("name: {}", process_info.process_name);
-            println!("path: {}", process_info.process_full_path);
+            println!("name: {}", process_info.process_name.to_string_lossy());
+            println!("path: {}", process_info.process_full_path.display());
             for module in process_info.modules {
-                println!("\tmodule: {module}");
+                println!("\tmodule: {}", module.display());
             }
             println!();
         }

@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::{ffi::c_void, path::PathBuf};
 
 use anyhow::anyhow;
 use log::debug;
@@ -27,7 +27,7 @@ use crate::string_ext;
 #[derive(Debug)]
 pub struct HandleInfo {
     pub pid: u32,
-    pub nt_path: String,
+    pub nt_path: PathBuf,
 }
 
 pub fn enum_handles() -> anyhow::Result<Vec<HandleInfo>> {
@@ -146,7 +146,7 @@ pub fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<b
     Ok(true)
 }
 
-pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<String> {
+pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<PathBuf> {
     let object_name_information = OBJECT_INFORMATION_CLASS(1);
     let buffer = nt_ext::nt_query_object_loop(safe_file_handle, object_name_information)?;
 
@@ -159,7 +159,7 @@ pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<Str
     };
 
     let object_name = string_ext::from_buffer(&buffer, object_name_info.Name)?;
-    Ok(object_name.to_string_lossy().into_owned())
+    Ok(PathBuf::from(object_name))
 }
 
 #[repr(C)]
@@ -194,7 +194,11 @@ mod tests {
         assert!(!handle_infos.is_empty());
 
         for handle_info in handle_infos {
-            println!("pid={}, nt_path={}", handle_info.pid, handle_info.nt_path);
+            println!(
+                "pid={}, nt_path={}",
+                handle_info.pid,
+                handle_info.nt_path.display()
+            );
         }
     }
 }

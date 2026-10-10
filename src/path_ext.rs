@@ -1,4 +1,9 @@
 use anyhow::anyhow;
+use std::{
+    ffi::OsStr,
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
+};
 use windows::{
     Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -9,7 +14,7 @@ use windows::{
 
 use crate::handle_ext::handle_to_nt_path;
 
-pub fn win32_path_to_nt_path(win32_path: impl AsRef<str>) -> anyhow::Result<String> {
+pub fn win32_path_to_nt_path(win32_path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
     let handle = unsafe {
         CreateFileW(
             &HSTRING::from(win32_path.as_ref()),
@@ -55,9 +60,12 @@ pub fn win32_path_to_nt_path(win32_path: impl AsRef<str>) -> anyhow::Result<Stri
 ///
 /// `true` if `reference_path` is the same as or an ancestor of `subject_path`,
 /// `false` otherwise. On Windows, the comparison is case-insensitive.
-pub fn is_same_or_ancestor_of(reference_path: &str, subject_path: &str) -> bool {
-    let reference: Vec<_> = reference_path.encode_utf16().collect();
-    let subject: Vec<_> = subject_path.encode_utf16().collect();
+pub fn is_same_or_ancestor_of(
+    reference_path: impl AsRef<OsStr>,
+    subject_path: impl AsRef<OsStr>,
+) -> bool {
+    let reference: Vec<_> = reference_path.as_ref().encode_wide().collect();
+    let subject: Vec<_> = subject_path.as_ref().encode_wide().collect();
     matches_wide(&reference, &subject)
 }
 
@@ -85,6 +93,35 @@ pub fn matches_wide(reference: &[u16], subject: &[u16]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+    #[test]
+    fn preserves_unpaired_utf16_in_paths_and_matching() {
+        let name: Vec<_> = format!("locksmith-native-{}-", std::process::id())
+            .encode_utf16()
+            .chain([0xd800])
+            .chain(".tmp".encode_utf16())
+            .collect();
+        let file = std::env::temp_dir().join(OsString::from_wide(&name));
+        let result = (|| {
+            let opened = std::fs::File::create(&file)?;
+            let native = win32_path_to_nt_path(&file)?;
+            let native_units: Vec<_> = native.as_os_str().encode_wide().collect();
+            assert!(native_units.ends_with(&name));
+            assert!(is_same_or_ancestor_of(&native, &native));
+            let mut altered = native_units.clone();
+            *altered.iter_mut().find(|unit| **unit == 0xd800).unwrap() = 0xfffd;
+            assert!(!is_same_or_ancestor_of(
+                &native,
+                OsString::from_wide(&altered)
+            ));
+            drop(opened);
+            anyhow::Ok(())
+        })();
+        let cleanup = std::fs::remove_file(&file);
+        result.unwrap();
+        cleanup.unwrap();
+    }
 
     #[test]
     fn windows_unicode_case_and_component_boundaries() {
