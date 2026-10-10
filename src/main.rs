@@ -11,6 +11,7 @@ mod nt_ext;
 mod path_ext;
 mod process_ext;
 mod string_ext;
+mod wide_query;
 
 #[derive(Parser, Debug)]
 #[command(name = "locksmith")]

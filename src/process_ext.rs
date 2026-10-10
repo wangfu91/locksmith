@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use windows::{
     Wdk::System::SystemInformation::SystemProcessInformation,
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE, HMODULE, MAX_PATH},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, HANDLE, HMODULE, MAX_PATH},
         Security::{
             GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
             TokenUser,
@@ -20,7 +20,7 @@ use windows::{
     core::{Error, Owned, PWSTR},
 };
 
-use crate::{nt_ext, path_ext, string_ext::ToString};
+use crate::{nt_ext, path_ext, string_ext::ToString, wide_query};
 
 pub struct ProcessInfo {
     pub pid: u32,
@@ -120,26 +120,16 @@ fn get_module_name(
     safe_process_handle: &Owned<HANDLE>,
     module: Option<HMODULE>,
 ) -> anyhow::Result<String> {
-    let mut buffer = vec![0u16; MAX_PATH as usize];
-
-    let actual_len =
-        unsafe { GetModuleFileNameExW(Some(**safe_process_handle), module, &mut buffer) };
-
-    if ERROR_INSUFFICIENT_BUFFER == unsafe { GetLastError() } {
-        // Plus one for the null terminator.
-        buffer.resize((actual_len + 1) as usize, 0);
-        unsafe { GetModuleFileNameExW(Some(**safe_process_handle), module, &mut buffer) };
-    }
-
-    if actual_len == 0 {
-        return Err(anyhow!(
-            "GetModuleFileNameExW failed, error: {}",
-            Error::from_thread()
-        ));
-    }
-
-    let module_name = String::from_utf16_lossy(&buffer[..actual_len as usize]);
-    Ok(module_name)
+    let buffer = wide_query::query(|buffer| {
+        let length =
+            unsafe { GetModuleFileNameExW(Some(**safe_process_handle), module, buffer) } as usize;
+        if length == 0 {
+            return Err(Error::from_thread().into());
+        }
+        Ok((length < buffer.len()).then_some(length))
+    })
+    .context("GetModuleFileNameExW failed")?;
+    Ok(String::from_utf16_lossy(&buffer))
 }
 
 pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
