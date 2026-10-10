@@ -1,8 +1,8 @@
 use anyhow::{Context, anyhow};
-use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf, rc::Rc};
 use windows::{
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, HMODULE, MAX_PATH},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, HMODULE},
         Security::{
             GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
             TokenUser,
@@ -12,13 +12,11 @@ use windows::{
                 CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
                 TH32CS_SNAPPROCESS,
             },
-            ProcessStatus::{
-                EnumProcessModules, GetMappedFileNameW, GetModuleBaseNameW, GetModuleFileNameExW,
-            },
+            ProcessStatus::{EnumProcessModules, GetMappedFileNameW},
             Threading::{
-                OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
-                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
-                TerminateProcess,
+                OpenProcess, OpenProcessToken, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32,
+                PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+                PROCESS_VM_READ, QueryFullProcessImageNameW, TerminateProcess,
             },
         },
     },
@@ -26,8 +24,78 @@ use windows::{
 };
 
 use crate::{diagnostics::Diagnostics, wide_query};
+#[cfg(test)]
+use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
 
+/// A process identity retained from discovery through display and termination.
+/// The owning handle is private; raw copies only borrow it for system calls.
+#[derive(Debug)]
+pub struct Process {
+    pub pid: u32,
+    handle: Owned<HANDLE>,
+    can_terminate: bool,
+}
+
+impl Process {
+    pub fn open(
+        pid: u32,
+        rights: PROCESS_ACCESS_RIGHTS,
+        kill: bool,
+    ) -> windows::core::Result<Self> {
+        let opened = if kill {
+            unsafe { OpenProcess(rights | PROCESS_TERMINATE, false, pid) }.ok()
+        } else {
+            None
+        };
+        let can_terminate = opened.is_some();
+        let raw = match opened {
+            Some(handle) => handle,
+            None => unsafe { OpenProcess(rights, false, pid) }?,
+        };
+        // SAFETY: only a freshly returned handle is transferred into its sole owner.
+        Ok(Self {
+            pid,
+            handle: unsafe { Owned::new(raw) },
+            can_terminate,
+        })
+    }
+
+    pub fn raw(&self) -> HANDLE {
+        *self.handle
+    }
+
+    pub fn image_path(&self) -> anyhow::Result<PathBuf> {
+        let units = wide_query::query(|buffer| {
+            let mut length = buffer.len() as u32;
+            // SAFETY: retained process handle and writable UTF-16 buffer are live.
+            match unsafe {
+                QueryFullProcessImageNameW(
+                    self.raw(),
+                    PROCESS_NAME_WIN32,
+                    PWSTR(buffer.as_mut_ptr()),
+                    &mut length,
+                )
+            } {
+                Ok(()) => Ok(Some(length as usize)),
+                Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.into() => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        })?;
+        Ok(PathBuf::from(OsString::from_wide(&units)))
+    }
+
+    pub fn terminate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.can_terminate,
+            "Termination access was unavailable when the process was discovered"
+        );
+        // SAFETY: this is the same owned handle used while discovering the match.
+        unsafe { TerminateProcess(self.raw(), 1) }.context("TerminateProcess failed")?;
+        Ok(())
+    }
+}
 pub struct ProcessInfo {
+    pub process: Rc<Process>,
     pub pid: u32,
     pub process_name: OsString,
     pub process_full_path: PathBuf,
@@ -44,22 +112,23 @@ pub struct ModuleScan {
     pub diagnostics: Diagnostics,
 }
 
-pub fn enum_processes() -> anyhow::Result<ProcessScan> {
+pub fn enum_processes(kill: bool) -> anyhow::Result<ProcessScan> {
     let mut diagnostics = Diagnostics::default();
     let mut process_info_collection = Vec::<ProcessInfo>::new();
     for entry in process_snapshot()? {
         let pid = entry.th32ProcessID;
-        let name_len = entry
-            .szExeFile
-            .iter()
-            .position(|&unit| unit == 0)
-            .unwrap_or(entry.szExeFile.len());
-        let process_name = OsString::from_wide(&entry.szExeFile[..name_len]);
-
-        let process_full_path =
-            pid_to_process_full_path(pid).unwrap_or_else(|_| PathBuf::from("unknown"));
-
-        let module_nt_paths = match enum_process_modules(pid) {
+        let process = match Process::open(pid, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, kill) {
+            Ok(process) => Rc::new(process),
+            Err(error) => {
+                diagnostics.record(format!("PID {pid}: process query failed: {error:#}"));
+                continue;
+            }
+        };
+        let process_full_path = process
+            .image_path()
+            .unwrap_or_else(|_| PathBuf::from("unknown"));
+        let process_name = process_full_path.file_name().unwrap_or_default().to_owned();
+        let module_nt_paths = match enum_process_modules(&process) {
             Ok(scan) => {
                 diagnostics.merge(scan.diagnostics);
                 scan.paths
@@ -70,6 +139,7 @@ pub fn enum_processes() -> anyhow::Result<ProcessScan> {
             }
         };
         let process_info = ProcessInfo {
+            process,
             pid,
             process_name,
             process_full_path,
@@ -116,18 +186,13 @@ fn collect_snapshot(
     }
 }
 
-pub fn enum_process_modules(pid: u32) -> anyhow::Result<ModuleScan> {
-    // https://learn.microsoft.com/en-us/windows/win32/psapi/enumerating-all-processes
-    let process_handle =
-        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
-    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
-    let safe_process_handle = unsafe { Owned::new(process_handle) };
+pub fn enum_process_modules(process: &Process) -> anyhow::Result<ModuleScan> {
     let modules = query_modules(|buffer| {
         let mut needed = 0;
         // SAFETY: the live process handle and typed writable module array are valid.
         unsafe {
             EnumProcessModules(
-                *safe_process_handle,
+                process.raw(),
                 buffer.as_mut_ptr(),
                 std::mem::size_of_val(buffer) as u32,
                 &mut needed,
@@ -137,7 +202,7 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<ModuleScan> {
     })
     .context("EnumProcessModules failed")?;
     Ok(collect_module_paths(modules, |module| {
-        mapped_module_path(&safe_process_handle, module)
+        mapped_module_path(&process.handle, module)
     }))
 }
 
@@ -204,6 +269,7 @@ fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Resul
     Ok(PathBuf::from(OsString::from_wide(&buffer)))
 }
 
+#[cfg(test)]
 fn get_module_name(
     safe_process_handle: &Owned<HANDLE>,
     module: Option<HMODULE>,
@@ -303,60 +369,53 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
     Ok((user, domain))
 }
 
-pub fn pid_to_process_name(pid: u32) -> anyhow::Result<OsString> {
-    let process_handle = unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-            false,
-            pid,
-        )?
-    };
-    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
-    let safe_process_handle = unsafe { Owned::new(process_handle) };
-
-    let mut buffer = vec![0u16; MAX_PATH as usize];
-    let actual_len = unsafe { GetModuleBaseNameW(*safe_process_handle, None, &mut buffer) };
-
-    if actual_len == 0 {
-        return Err(anyhow!(
-            "GetModuleBaseNameW failed, error: {}",
-            Error::from_thread()
-        ));
-    }
-
-    let process_name = OsString::from_wide(&buffer[..actual_len as usize]);
-    Ok(process_name)
-}
-
-pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<PathBuf> {
-    let process_handle = unsafe {
-        OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-            false,
-            pid,
-        )?
-    };
-    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
-    let safe_process_handle = unsafe { Owned::new(process_handle) };
-
-    get_module_name(&safe_process_handle, None)
-}
-
-pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
-    let process_handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid)? };
-    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
-    let safe_process_handle = unsafe { Owned::new(process_handle) };
-
-    unsafe {
-        TerminateProcess(*safe_process_handle, 1)
-            .context(format!("Failed to terminate process with PID: {pid}"))?
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn termination_uses_retained_handle_not_a_pid_lookup() {
+        use std::{
+            os::windows::process::CommandExt,
+            process::{Child, Command},
+        };
+        struct ChildGuard(Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = ChildGuard(
+            Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 60",
+                ])
+                .creation_flags(0x08000000)
+                .spawn()
+                .unwrap(),
+        );
+        let mut process =
+            Process::open(child.0.id(), PROCESS_QUERY_LIMITED_INFORMATION, true).unwrap();
+        assert_eq!(
+            process
+                .image_path()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_lowercase(),
+            "powershell.exe"
+        );
+        // Deliberately invalidate the stored PID: termination must still use the
+        // original child handle, and must never try to open this sentinel PID.
+        process.pid = u32::MAX;
+        process.terminate().unwrap();
+        assert!(!child.0.wait().unwrap().success());
+    }
 
     #[test]
     fn module_failure_preserves_successes_and_continues() {
@@ -473,7 +532,7 @@ mod tests {
     // cargo test test_enum_processes -- --nocapture
     #[test]
     fn test_enum_processes() {
-        let process_infos = enum_processes().unwrap().processes;
+        let process_infos = enum_processes(false).unwrap().processes;
         assert!(!process_infos.is_empty());
 
         for process_info in process_infos {

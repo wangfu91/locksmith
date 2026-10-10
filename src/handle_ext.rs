@@ -1,4 +1,4 @@
-use std::{ffi::c_void, path::PathBuf};
+use std::{ffi::c_void, path::PathBuf, rc::Rc};
 
 use anyhow::anyhow;
 use log::debug;
@@ -14,23 +14,23 @@ use windows::{
         },
         Storage::FileSystem::{FILE_TYPE_DISK, GetFileType},
         System::{
-            Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE},
+            Threading::{GetCurrentProcess, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION},
             WindowsProgramming::PUBLIC_OBJECT_TYPE_INFORMATION,
         },
     },
     core::Owned,
 };
 
-use crate::nt_ext;
 use crate::string_ext;
+use crate::{nt_ext, process_ext::Process};
 
 #[derive(Debug)]
 pub struct HandleInfo {
-    pub pid: u32,
+    pub process: Rc<Process>,
     pub nt_path: PathBuf,
 }
 
-pub fn enum_handles() -> anyhow::Result<Vec<HandleInfo>> {
+pub fn enum_handles(kill: bool) -> anyhow::Result<Vec<HandleInfo>> {
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS =
         SYSTEM_INFORMATION_CLASS(64);
 
@@ -38,17 +38,24 @@ pub fn enum_handles() -> anyhow::Result<Vec<HandleInfo>> {
 
     let mut handle_info_collection = Vec::new();
     for entry in handle_entries(&buffer)? {
-        if let Some(info) = get_handle_info(entry) {
+        if let Some(info) = get_handle_info(entry, kill) {
             handle_info_collection.push(info);
         }
     }
     Ok(handle_info_collection)
 }
 
-pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<HandleInfo> {
+pub fn get_handle_info(
+    handle_entry: SystemHandleTableEntryInfoEx,
+    kill: bool,
+) -> Option<HandleInfo> {
     let pid = handle_entry.unique_process_id as u32;
 
-    let open_process_result = unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, pid) };
+    let open_process_result = Process::open(
+        pid,
+        PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION,
+        kill,
+    );
     match open_process_result {
         Err(err) => {
             if err.code() != ERROR_ACCESS_DENIED.into() {
@@ -56,13 +63,12 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
             }
             None
         }
-        Ok(process_handle) => {
-            // SAFETY: OpenProcess returned a new handle owned by this scope.
-            let safe_process_handle = unsafe { Owned::new(process_handle) };
+        Ok(process) => {
+            let process = Rc::new(process);
             let mut dup_handle = HANDLE::default();
             if let Err(err) = unsafe {
                 DuplicateHandle(
-                    *safe_process_handle,
+                    process.raw(),
                     HANDLE(handle_entry.handle_value as isize as *mut c_void),
                     GetCurrentProcess(),
                     &mut dup_handle,
@@ -89,7 +95,7 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
 
             let handle_to_nt_path_result = handle_to_nt_path(&safe_dup_handle);
             match handle_to_nt_path_result {
-                Ok(nt_path) => Some(HandleInfo { pid, nt_path }),
+                Ok(nt_path) => Some(HandleInfo { process, nt_path }),
                 Err(err) => {
                     debug!("handle_to_nt_path failed, pid: {pid}, error: {err:?}");
                     None
@@ -214,13 +220,13 @@ mod tests {
     // cargo test test_enum_handles -- --nocapture
     #[test]
     fn test_enum_handles() {
-        let handle_infos = enum_handles().unwrap();
+        let handle_infos = enum_handles(false).unwrap();
         assert!(!handle_infos.is_empty());
 
         for handle_info in handle_infos {
             println!(
                 "pid={}, nt_path={}",
-                handle_info.pid,
+                handle_info.process.pid,
                 handle_info.nt_path.display()
             );
         }

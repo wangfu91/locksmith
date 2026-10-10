@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Instant;
 
 mod diagnostics;
@@ -139,20 +140,20 @@ struct KillReport {
 }
 
 fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> KillReport {
-    terminate_all(processes.values(), |process| {
-        process_ext::kill_process_by_pid(process.pid)
+    terminate_all(processes.keys().copied(), |pid| {
+        processes[&pid].process.terminate()
     })
 }
 
-fn terminate_all<'a>(
-    processes: impl IntoIterator<Item = &'a ProcessResult>,
-    mut terminate: impl FnMut(&ProcessResult) -> anyhow::Result<()>,
+fn terminate_all(
+    processes: impl IntoIterator<Item = u32>,
+    mut terminate: impl FnMut(u32) -> anyhow::Result<()>,
 ) -> KillReport {
     let mut report = KillReport::default();
-    for process in processes {
-        match terminate(process) {
+    for pid in processes {
+        match terminate(pid) {
             Ok(()) => report.succeeded += 1,
-            Err(error) => report.failures.push((process.pid, format!("{error:#}"))),
+            Err(error) => report.failures.push((pid, format!("{error:#}"))),
         }
     }
     report
@@ -182,21 +183,28 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     let mut process_results = HashMap::<u32, ProcessResult>::new();
     let mut diagnostics = diagnostics::Diagnostics::default();
 
-    let handle_infos = handle_ext::enum_handles().with_context(|| "Failed to enumerate handles")?;
+    let handle_infos =
+        handle_ext::enum_handles(cli.kill).with_context(|| "Failed to enumerate handles")?;
 
     for handle_info in handle_infos {
         if path_ext::is_same_or_ancestor_of(&nt_path, &handle_info.nt_path) {
-            let pid = handle_info.pid;
-            let name =
-                process_ext::pid_to_process_name(pid).unwrap_or_else(|_| OsString::from("unknown"));
-            let path = process_ext::pid_to_process_full_path(pid)
+            let process = handle_info.process;
+            let pid = process.pid;
+            let path = process
+                .image_path()
                 .unwrap_or_else(|_| PathBuf::from("unknown"));
-            let process_result = ProcessResult { pid, name, path };
+            let name = path.file_name().unwrap_or_default().to_owned();
+            let process_result = ProcessResult {
+                pid,
+                name,
+                path,
+                process,
+            };
             process_results.insert(pid, process_result);
         }
     }
 
-    let proces_infos = match process_ext::enum_processes() {
+    let proces_infos = match process_ext::enum_processes(cli.kill) {
         Ok(scan) => {
             diagnostics.merge(scan.diagnostics);
             scan.processes
@@ -210,6 +218,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
         for module in &process_info.modules {
             if path_ext::is_same_or_ancestor_of(&nt_path, module) {
                 let process_result = ProcessResult {
+                    process: Rc::clone(&process_info.process),
                     pid: process_info.pid,
                     name: process_info.process_name.clone(),
                     path: process_info.process_full_path.clone(),
@@ -227,6 +236,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
 
 #[derive(Debug)]
 struct ProcessResult {
+    process: Rc<process_ext::Process>,
     pid: u32,
     name: OsString,
     path: PathBuf,
@@ -238,18 +248,10 @@ mod tests {
 
     #[test]
     fn termination_summary_keeps_all_failures_and_successes() {
-        let processes: Vec<_> = [17, 42, 99]
-            .into_iter()
-            .map(|pid| ProcessResult {
-                pid,
-                name: OsString::from("test"),
-                path: PathBuf::from("test"),
-            })
-            .collect();
         let mut visited = Vec::new();
-        let report = terminate_all(&processes, |process| {
-            visited.push(process.pid);
-            if process.pid == 42 {
+        let report = terminate_all([17, 42, 99], |pid| {
+            visited.push(pid);
+            if pid == 42 {
                 anyhow::bail!("access denied");
             }
             Ok(())
