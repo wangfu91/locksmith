@@ -27,6 +27,7 @@ features = [
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_System",
+    "Win32_System_Console",
     "Wdk_Foundation",
     "Win32_System_Threading",
     "Wdk_System",

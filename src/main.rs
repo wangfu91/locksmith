@@ -1,9 +1,9 @@
 use anyhow::Context;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use colored::Colorize;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
@@ -16,7 +16,7 @@ mod string_ext;
 mod wide_query;
 
 #[derive(Parser, Debug)]
-#[command(name = "locksmith")]
+#[command(name = "locksmith", version)]
 #[command(author = "Fu Wang <wangfu91@hotmail.com>")]
 #[command(
     about = "locksmith - Find processes locking your files",
@@ -33,13 +33,38 @@ struct Cli {
 }
 
 fn main() -> std::process::ExitCode {
-    match run(&Cli::parse()) {
+    match run_cli() {
         Ok(status) => status,
         Err(error) => {
             eprintln!("Error: {error:#}");
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn run_cli() -> anyhow::Result<std::process::ExitCode> {
+    if std::env::args_os().len() == 1 && has_standalone_console() {
+        Cli::command().print_long_help()?;
+        println!(
+            "\n\nTo use locksmith, open PowerShell, Command Prompt, or Windows Terminal.\n\
+             Example: locksmith \"C:\\path\\to\\file.txt\"\n\n\
+             Press Enter to close this window."
+        );
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut String::new())?;
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    run(&Cli::parse())
+}
+
+fn has_standalone_console() -> bool {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return false;
+    }
+    let mut processes = [0; 2];
+    // SAFETY: Windows writes process IDs into a live, bounded output slice.
+    // A console containing only this process was opened for standalone launch.
+    unsafe { windows::Win32::System::Console::GetConsoleProcessList(&mut processes) == 1 }
 }
 
 fn run(cli: &Cli) -> anyhow::Result<std::process::ExitCode> {

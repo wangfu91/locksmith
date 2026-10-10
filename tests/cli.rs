@@ -100,6 +100,15 @@ fn missing_path_is_an_operational_failure() {
 
 #[test]
 fn help_and_argument_errors_have_expected_statuses() {
+    let version = Command::new(env!("CARGO_BIN_EXE_locksmith"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        concat!("locksmith ", env!("CARGO_PKG_VERSION"))
+    );
     assert!(
         Command::new(env!("CARGO_BIN_EXE_locksmith"))
             .arg("--help")

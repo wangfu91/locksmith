@@ -85,6 +85,8 @@ cd locksmith
 cargo build --release
 ```
 
+For Microsoft Store MSIX packaging, see [the packaging guide](packaging/msix/README.md).
+
 ## 📜 License
 
 This project is licensed under the [MIT License](LICENSE).
