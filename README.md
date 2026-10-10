@@ -34,7 +34,9 @@ Options:
           Print help (see a summary with '-h')
 ```
 
-Exit codes: `0` success, `1` operation failed, `2` incomplete scan or invalid arguments.
+Inaccessible or exited processes are silently skipped during scanning, including when running as administrator. Results list the owners Locksmith could identify.
+
+Exit codes: `0` scan completed, `1` operation failed, `2` an entire scan method was unavailable or arguments were invalid.
 
 ### 📝 Examples
 

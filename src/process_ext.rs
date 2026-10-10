@@ -26,7 +26,7 @@ use windows::{
     core::{Error, Owned, PWSTR},
 };
 
-use crate::{diagnostics::Diagnostics, path_ext::Target, wide_query};
+use crate::{path_ext::Target, wide_query};
 #[cfg(test)]
 use windows::Win32::System::ProcessStatus::GetModuleFileNameExW;
 
@@ -97,25 +97,12 @@ impl Process {
         Ok(())
     }
 }
-pub struct ProcessScan {
-    pub processes: Vec<Rc<Process>>,
-    pub diagnostics: Diagnostics,
-}
-
-struct ModuleScan {
-    matched: bool,
-    diagnostics: Diagnostics,
-}
-
 pub fn scan_process_modules(
     target: &Target,
     already_matched: &HashSet<u32>,
     kill: bool,
-) -> anyhow::Result<ProcessScan> {
-    let mut scan = ProcessScan {
-        processes: Vec::new(),
-        diagnostics: Diagnostics::default(),
-    };
+) -> anyhow::Result<Vec<Rc<Process>>> {
+    let mut processes = Vec::new();
     for entry in process_snapshot()? {
         let pid = entry.th32ProcessID;
         if pid == 0 || already_matched.contains(&pid) {
@@ -123,25 +110,14 @@ pub fn scan_process_modules(
         }
         let process = match Process::open(pid, PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, kill) {
             Ok(process) => Rc::new(process),
-            Err(error) => {
-                scan.diagnostics
-                    .record(format!("PID {pid}: process query failed: {error:#}"));
-                continue;
-            }
+            Err(_) => continue,
         };
-        match enum_process_modules(&process, |path| target.matches(path)) {
-            Ok(modules) => {
-                scan.diagnostics.merge(modules.diagnostics);
-                if modules.matched {
-                    scan.processes.push(process);
-                }
-            }
-            Err(error) => scan
-                .diagnostics
-                .record(format!("PID {pid}: module scan failed: {error:#}")),
+        // A process may be protected or exit while its modules are queried.
+        if enum_process_modules(&process, |path| target.matches(path)).unwrap_or(false) {
+            processes.push(process);
         }
     }
-    Ok(scan)
+    Ok(processes)
 }
 fn process_snapshot() -> anyhow::Result<Vec<PROCESSENTRY32W>> {
     let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? };
@@ -177,7 +153,7 @@ fn collect_snapshot(
 fn enum_process_modules(
     process: &Process,
     matches: impl FnMut(&Path) -> bool,
-) -> anyhow::Result<ModuleScan> {
+) -> anyhow::Result<bool> {
     let modules = query_modules(|buffer| {
         let mut needed = 0;
         // SAFETY: the live process handle and typed writable module array are valid.
@@ -203,25 +179,15 @@ fn collect_module_paths(
     modules: impl IntoIterator<Item = HMODULE>,
     mut query: impl FnMut(HMODULE) -> anyhow::Result<PathBuf>,
     mut matches: impl FnMut(&Path) -> bool,
-) -> ModuleScan {
-    let mut scan = ModuleScan {
-        matched: false,
-        diagnostics: Diagnostics::default(),
-    };
+) -> bool {
     for module in modules {
-        match query(module) {
-            Ok(path) => {
-                if matches(&path) {
-                    scan.matched = true;
-                    break;
-                }
-            }
-            Err(error) => scan
-                .diagnostics
-                .record(format!("Module path query failed: {error:#}")),
+        if let Ok(path) = query(module)
+            && matches(&path)
+        {
+            return true;
         }
     }
-    scan
+    false
 }
 
 fn query_modules(
@@ -349,7 +315,7 @@ mod tests {
         let target = Target::open(&dll).unwrap();
         assert!(target.matches(&mapped));
         let scan = enum_process_modules(&process, |path| target.matches(path)).unwrap();
-        assert!(scan.matched);
+        assert!(scan);
         drop(target);
         drop(module);
     }
@@ -369,9 +335,8 @@ mod tests {
             },
             |_| true,
         );
-        assert!(scan.matched);
+        assert!(scan);
         assert_eq!(queried, [17]);
-        assert_eq!(scan.diagnostics.failed_operations, 0);
     }
 
     #[test]
@@ -433,8 +398,7 @@ mod tests {
             },
             |path| path == Path::new("module3.dll"),
         );
-        assert!(scan.matched);
-        assert_eq!(scan.diagnostics.failed_operations, 1);
+        assert!(scan);
     }
 
     #[test]
@@ -540,10 +504,6 @@ mod tests {
     fn live_module_scan_finds_this_executable() {
         let target = Target::open(std::env::current_exe().unwrap()).unwrap();
         let scan = scan_process_modules(&target, &HashSet::new(), false).unwrap();
-        assert!(
-            scan.processes
-                .iter()
-                .any(|process| process.pid == std::process::id())
-        );
+        assert!(scan.iter().any(|process| process.pid == std::process::id()));
     }
 }

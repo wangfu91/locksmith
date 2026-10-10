@@ -16,8 +16,14 @@ impl Drop for TestTree {
 }
 
 fn assert_found_this_process(result: &std::process::Output) {
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert!(
-        matches!(result.status.code(), Some(0 | 2)),
+        result.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );

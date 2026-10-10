@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
-mod diagnostics;
 mod handle_ext;
 mod nt_ext;
 mod path_ext;
@@ -46,25 +45,8 @@ fn main() -> std::process::ExitCode {
 fn run(cli: &Cli) -> anyhow::Result<std::process::ExitCode> {
     let start = Instant::now();
     let scan = find_locker(cli)?;
-    let partial = scan.diagnostics.failed_operations > 0;
-    if partial {
-        eprintln!(
-            "Warning: {} query operation(s) failed; scan results may be incomplete.",
-            scan.diagnostics.failed_operations
-        );
-        for example in &scan.diagnostics.examples {
-            eprintln!("  {example}");
-        }
-    }
     if scan.processes.is_empty() {
-        eprintln!(
-            "No locker found{}",
-            if partial {
-                " in the accessible results"
-            } else {
-                ""
-            }
-        );
+        eprintln!("No locker found");
     } else {
         println!(
             "Found {} locker(s) in {:.2}s:\n",
@@ -107,7 +89,7 @@ fn run(cli: &Cli) -> anyhow::Result<std::process::ExitCode> {
             }
         }
     }
-    Ok(scan_status(partial))
+    Ok(scan_status(scan.partial))
 }
 
 fn scan_status(partial: bool) -> std::process::ExitCode {
@@ -160,7 +142,7 @@ fn terminate_all(
 }
 struct ScanResult {
     processes: HashMap<u32, ProcessResult>,
-    diagnostics: diagnostics::Diagnostics,
+    partial: bool,
 }
 
 fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
@@ -181,29 +163,33 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
         .with_context(|| "Failed to convert Win32 path to NT path")?;
 
     let mut matches = HashMap::<u32, Rc<process_ext::Process>>::new();
-    let mut diagnostics = diagnostics::Diagnostics::default();
+    let mut partial = false;
     match handle_ext::enum_handles(cli.kill, &target) {
-        Ok(scan) => {
-            diagnostics.merge(scan.diagnostics);
-            for info in scan.handles {
+        Ok(handles) => {
+            for info in handles {
                 matches.entry(info.process.pid).or_insert(info.process);
             }
         }
-        Err(error) => diagnostics.record(format!("Handle enumeration failed: {error:#}")),
+        Err(_) => {
+            eprintln!("Warning: Could not scan open handles; results may be incomplete.");
+            partial = true;
+        }
     }
     let already_matched = matches.keys().copied().collect();
     match process_ext::scan_process_modules(&target, &already_matched, cli.kill) {
-        Ok(scan) => {
-            diagnostics.merge(scan.diagnostics);
-            for process in scan.processes {
+        Ok(processes) => {
+            for process in processes {
                 matches.entry(process.pid).or_insert(process);
             }
         }
-        Err(error) => diagnostics.record(format!("Process enumeration failed: {error:#}")),
+        Err(_) => {
+            eprintln!("Warning: Could not scan process modules; results may be incomplete.");
+            partial = true;
+        }
     }
     Ok(ScanResult {
         processes: describe_matches(matches, |process| process.image_path()),
-        diagnostics,
+        partial,
     })
 }
 

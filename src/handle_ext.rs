@@ -1,6 +1,5 @@
 use std::{collections::HashMap, ffi::c_void, path::PathBuf, rc::Rc};
 
-use crate::diagnostics::Diagnostics;
 use anyhow::anyhow;
 use windows::{
     Wdk::{
@@ -27,12 +26,7 @@ pub struct HandleInfo {
     pub nt_path: PathBuf,
 }
 
-pub struct HandleScan {
-    pub handles: Vec<HandleInfo>,
-    pub diagnostics: Diagnostics,
-}
-
-pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<HandleScan> {
+pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<Vec<HandleInfo>> {
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS =
         SYSTEM_INFORMATION_CLASS(64);
     let buffer = nt_ext::nt_query_information_loop(SYSTEM_EXTENDED_HANDLE_INFORMATION)?;
@@ -41,10 +35,7 @@ pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<HandleScan> {
     let file_type = file_object_type(handle_entries(&buffer)?, own_pid, target_value);
     let mut cache = HashMap::new();
     let mut matched = std::collections::HashSet::new();
-    let mut scan = HandleScan {
-        handles: Vec::new(),
-        diagnostics: Diagnostics::default(),
-    };
+    let mut handles = Vec::new();
     for entry in handle_entries(&buffer)? {
         if entry.unique_process_id == own_pid && entry.handle_value == target_value {
             continue; // Our target query handle is not evidence of a locker.
@@ -53,36 +44,29 @@ pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<HandleScan> {
             continue;
         }
         let Ok(pid) = u32::try_from(entry.unique_process_id) else {
-            scan.diagnostics
-                .record("Handle table contains an invalid process ID");
             continue;
         };
         if matched.contains(&pid) {
             continue;
         }
-        let Some(process) = cached_process(&mut cache, pid, kill, &mut scan.diagnostics) else {
+        let Some(process) = cached_process(&mut cache, pid, kill) else {
             continue;
         };
         match get_handle_info(entry, process, file_type.is_some()) {
             Ok(Some(info)) if target.matches(&info.nt_path) => {
                 matched.insert(pid);
-                scan.handles.push(info);
+                handles.push(info);
             }
-            Ok(Some(_)) => {}
-            Ok(None) => {}
-            Err(error) => scan
-                .diagnostics
-                .record(format!("PID {pid}: handle query failed: {error:#}")),
+            _ => {}
         }
     }
-    Ok(scan)
+    Ok(handles)
 }
 
 fn cached_process(
     cache: &mut HashMap<u32, Option<Rc<Process>>>,
     pid: u32,
     kill: bool,
-    diagnostics: &mut Diagnostics,
 ) -> Option<Rc<Process>> {
     cache
         .entry(pid)
@@ -94,13 +78,8 @@ fn cached_process(
                 kill,
             )
             .or_else(|_| Process::open(pid, PROCESS_DUP_HANDLE, kill));
-            match opened {
-                Ok(process) => Some(Rc::new(process)),
-                Err(error) => {
-                    diagnostics.record(format!("PID {pid}: cannot open process handles: {error}"));
-                    None
-                }
-            }
+            // Inaccessible and exited processes are routine during a system scan.
+            opened.ok().map(Rc::new)
         })
         .clone()
 }
@@ -255,12 +234,12 @@ mod tests {
         let result = (|| {
             let target = Target::open(&path)?;
             let first = enum_handles(false, &target)?;
-            assert!(!first.handles.iter().any(
+            assert!(!first.iter().any(
                 |info| info.process.pid == std::process::id() && target.matches(&info.nt_path)
             ));
             let held = std::fs::File::open(&path)?;
             let second = enum_handles(false, &target)?;
-            assert!(second.handles.iter().any(
+            assert!(second.iter().any(
                 |info| info.process.pid == std::process::id() && target.matches(&info.nt_path)
             ));
             drop(held);
@@ -272,18 +251,14 @@ mod tests {
     }
 
     #[test]
-    fn process_cache_reuses_identity_and_reports_open_failure_once() {
+    fn process_cache_reuses_identity_and_caches_open_failures() {
         let mut cache = HashMap::new();
-        let mut diagnostics = Diagnostics::default();
-        let first =
-            cached_process(&mut cache, std::process::id(), false, &mut diagnostics).unwrap();
+        let first = cached_process(&mut cache, std::process::id(), false).unwrap();
         for _ in 0..100 {
-            let again =
-                cached_process(&mut cache, std::process::id(), false, &mut diagnostics).unwrap();
+            let again = cached_process(&mut cache, std::process::id(), false).unwrap();
             assert!(Rc::ptr_eq(&first, &again));
-            assert!(cached_process(&mut cache, u32::MAX, false, &mut diagnostics).is_none());
+            assert!(cached_process(&mut cache, u32::MAX, false).is_none());
         }
-        assert_eq!(diagnostics.failed_operations, 1);
         assert_eq!(cache.len(), 2);
     }
 
@@ -322,7 +297,7 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         let held = std::fs::File::open(&executable).unwrap();
         let target = Target::open(&executable).unwrap();
-        let handle_infos = enum_handles(false, &target).unwrap().handles;
+        let handle_infos = enum_handles(false, &target).unwrap();
         assert!(
             handle_infos
                 .iter()
