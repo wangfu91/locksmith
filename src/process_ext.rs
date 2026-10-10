@@ -134,7 +134,7 @@ fn get_module_name(
     if actual_len == 0 {
         return Err(anyhow!(
             "GetModuleFileNameExW failed, error: {}",
-            Error::from_win32()
+            Error::from_thread()
         ));
     }
 
@@ -161,10 +161,9 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
     let mut token_size = 0u32;
     if let Err(err) =
         unsafe { GetTokenInformation(safe_token.handle, TokenUser, None, 0, &mut token_size) }
+        && err.code() != ERROR_INSUFFICIENT_BUFFER.into()
     {
-        if err.code() != ERROR_INSUFFICIENT_BUFFER.into() {
-            return Err(anyhow!("GetTokenInformation failed with error: {:?}", err));
-        }
+        return Err(anyhow!("GetTokenInformation failed with error: {:?}", err));
     }
 
     // Allocate buffer and get token information
@@ -197,10 +196,9 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
             &mut domain_size,
             &mut sid_name_use,
         )
-    } {
-        if err.code() != ERROR_INSUFFICIENT_BUFFER.into() {
-            return Err(anyhow!("LookupAccountSidW failed with error: {:?}", err));
-        }
+    } && err.code() != ERROR_INSUFFICIENT_BUFFER.into()
+    {
+        return Err(anyhow!("LookupAccountSidW failed with error: {:?}", err));
     }
 
     // Allocate buffers and get user and domain
@@ -241,7 +239,7 @@ pub fn pid_to_process_name(pid: u32) -> anyhow::Result<String> {
     if actual_len == 0 {
         return Err(anyhow!(
             "GetModuleBaseNameW failed, error: {}",
-            Error::from_win32()
+            Error::from_thread()
         ));
     }
 

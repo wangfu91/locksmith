@@ -13,7 +13,7 @@ impl ToString for UNICODE_STRING {
         }
 
         // Check if Length is valid (must be even as UTF-16 uses 2 bytes per character)
-        if self.Length % 2 != 0 {
+        if !self.Length.is_multiple_of(2) {
             return String::new();
         }
 
