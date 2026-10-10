@@ -4,10 +4,9 @@ use windows::{
         Foundation::{NtQueryObject, OBJECT_INFORMATION_CLASS},
         System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS},
     },
-    Win32::Foundation::{MAX_PATH, STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH},
+    Win32::Foundation::{HANDLE, MAX_PATH, STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH},
+    core::Owned,
 };
-
-use crate::safe_handle::SafeHandle;
 
 pub fn nt_query_information_loop(
     sys_info_class: SYSTEM_INFORMATION_CLASS,
@@ -44,7 +43,7 @@ pub fn nt_query_information_loop(
 }
 
 pub fn nt_query_object_loop(
-    safe_handle: &SafeHandle,
+    safe_handle: &Owned<HANDLE>,
     obj_info_class: OBJECT_INFORMATION_CLASS,
 ) -> anyhow::Result<Vec<u8>> {
     let mut buffer = vec![0u8; MAX_PATH as usize];
@@ -53,7 +52,7 @@ pub fn nt_query_object_loop(
         let mut return_len = 0u32;
         let nt_status = unsafe {
             NtQueryObject(
-                Some(safe_handle.handle),
+                Some(**safe_handle),
                 obj_info_class,
                 Some(buffer.as_mut_ptr() as *mut _),
                 buffer.len() as u32,

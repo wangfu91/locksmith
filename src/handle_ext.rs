@@ -18,10 +18,11 @@ use windows::{
             WindowsProgramming::PUBLIC_OBJECT_TYPE_INFORMATION,
         },
     },
+    core::Owned,
 };
 
+use crate::nt_ext;
 use crate::string_ext::ToString;
-use crate::{nt_ext, safe_handle::SafeHandle};
 
 #[derive(Debug)]
 pub struct HandleInfo {
@@ -78,14 +79,15 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
             None
         }
         Ok(process_handle) => {
-            let safe_process_handle = SafeHandle::new(process_handle);
-            let mut safe_dup_handle = SafeHandle::new(HANDLE::default());
+            // SAFETY: OpenProcess returned a new handle owned by this scope.
+            let safe_process_handle = unsafe { Owned::new(process_handle) };
+            let mut dup_handle = HANDLE::default();
             if let Err(err) = unsafe {
                 DuplicateHandle(
-                    safe_process_handle.handle,
+                    *safe_process_handle,
                     HANDLE(handle_entry.handle_value as isize as *mut c_void),
                     GetCurrentProcess(),
-                    &mut safe_dup_handle.handle,
+                    &mut dup_handle,
                     0,
                     false,
                     DUPLICATE_SAME_ACCESS,
@@ -99,6 +101,8 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
                 }
                 return None;
             }
+            // SAFETY: successful DuplicateHandle created an independent owned handle.
+            let safe_dup_handle = unsafe { Owned::new(dup_handle) };
 
             match is_handle_type_file(&safe_dup_handle) {
                 Ok(true) => {}
@@ -117,7 +121,7 @@ pub fn get_handle_info(handle_entry: SystemHandleTableEntryInfoEx) -> Option<Han
     }
 }
 
-pub fn is_handle_type_file(safe_file_handle: &SafeHandle) -> anyhow::Result<bool> {
+pub fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<bool> {
     let buffer = nt_ext::nt_query_object_loop(safe_file_handle, ObjectTypeInformation)?;
 
     let object_type_info = unsafe {
@@ -134,7 +138,7 @@ pub fn is_handle_type_file(safe_file_handle: &SafeHandle) -> anyhow::Result<bool
     if object_type_name != "File" {
         return Ok(false);
     }
-    let file_type = unsafe { GetFileType(safe_file_handle.handle) };
+    let file_type = unsafe { GetFileType(**safe_file_handle) };
     if file_type != FILE_TYPE_DISK {
         return Ok(false);
     }
@@ -142,7 +146,7 @@ pub fn is_handle_type_file(safe_file_handle: &SafeHandle) -> anyhow::Result<bool
     Ok(true)
 }
 
-pub fn handle_to_nt_path(safe_file_handle: &SafeHandle) -> anyhow::Result<String> {
+pub fn handle_to_nt_path(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<String> {
     let object_name_information = OBJECT_INFORMATION_CLASS(1);
     let buffer = nt_ext::nt_query_object_loop(safe_file_handle, object_name_information)?;
 

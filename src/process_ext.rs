@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use windows::{
     Wdk::System::SystemInformation::SystemProcessInformation,
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError, HMODULE, MAX_PATH},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE, HMODULE, MAX_PATH},
         Security::{
             GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
             TokenUser,
@@ -17,10 +17,9 @@ use windows::{
             WindowsProgramming::SYSTEM_PROCESS_INFORMATION,
         },
     },
-    core::{Error, PWSTR},
+    core::{Error, Owned, PWSTR},
 };
 
-use crate::safe_handle::SafeHandle;
 use crate::{nt_ext, path_ext, string_ext::ToString};
 
 pub struct ProcessInfo {
@@ -73,14 +72,15 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
     // https://learn.microsoft.com/en-us/windows/win32/psapi/enumerating-all-processes
     let process_handle =
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
-    let safe_process_handle = SafeHandle::new(process_handle);
+    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
+    let safe_process_handle = unsafe { Owned::new(process_handle) };
     let mut buffer = vec![0u8; MAX_PATH as usize];
 
     let mut size_needed = 0u32;
     loop {
         if let Err(err) = unsafe {
             EnumProcessModules(
-                safe_process_handle.handle,
+                *safe_process_handle,
                 buffer.as_mut_ptr() as _,
                 buffer.len() as u32,
                 &mut size_needed,
@@ -117,18 +117,18 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
 }
 
 fn get_module_name(
-    safe_process_handle: &SafeHandle,
+    safe_process_handle: &Owned<HANDLE>,
     module: Option<HMODULE>,
 ) -> anyhow::Result<String> {
     let mut buffer = vec![0u16; MAX_PATH as usize];
 
     let actual_len =
-        unsafe { GetModuleFileNameExW(Some(safe_process_handle.handle), module, &mut buffer) };
+        unsafe { GetModuleFileNameExW(Some(**safe_process_handle), module, &mut buffer) };
 
     if ERROR_INSUFFICIENT_BUFFER == unsafe { GetLastError() } {
         // Plus one for the null terminator.
         buffer.resize((actual_len + 1) as usize, 0);
-        unsafe { GetModuleFileNameExW(Some(safe_process_handle.handle), module, &mut buffer) };
+        unsafe { GetModuleFileNameExW(Some(**safe_process_handle), module, &mut buffer) };
     }
 
     if actual_len == 0 {
@@ -151,16 +151,18 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
         }
     };
 
-    let safe_process = SafeHandle::new(process_handle);
+    // SAFETY: OpenProcess returned a fresh handle owned exclusively here.
+    let safe_process = unsafe { Owned::new(process_handle) };
 
     let mut token = Default::default();
-    unsafe { OpenProcessToken(safe_process.handle, TOKEN_QUERY, &mut token)? }
-    let safe_token = SafeHandle::new(token);
+    unsafe { OpenProcessToken(*safe_process, TOKEN_QUERY, &mut token)? }
+    // SAFETY: successful OpenProcessToken returned a new owned token handle.
+    let safe_token = unsafe { Owned::new(token) };
 
     // Get required buffer size
     let mut token_size = 0u32;
     if let Err(err) =
-        unsafe { GetTokenInformation(safe_token.handle, TokenUser, None, 0, &mut token_size) }
+        unsafe { GetTokenInformation(*safe_token, TokenUser, None, 0, &mut token_size) }
         && err.code() != ERROR_INSUFFICIENT_BUFFER.into()
     {
         return Err(anyhow!("GetTokenInformation failed with error: {:?}", err));
@@ -170,7 +172,7 @@ pub fn _pid_to_user(pid: u32) -> anyhow::Result<(String, String)> {
     let mut token_buffer = vec![0u8; token_size as usize];
     unsafe {
         GetTokenInformation(
-            safe_token.handle,
+            *safe_token,
             TokenUser,
             Some(token_buffer.as_mut_ptr() as _),
             token_size,
@@ -231,10 +233,11 @@ pub fn pid_to_process_name(pid: u32) -> anyhow::Result<String> {
             pid,
         )?
     };
-    let safe_process_handle = SafeHandle::new(process_handle);
+    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
+    let safe_process_handle = unsafe { Owned::new(process_handle) };
 
     let mut buffer = vec![0u16; MAX_PATH as usize];
-    let actual_len = unsafe { GetModuleBaseNameW(safe_process_handle.handle, None, &mut buffer) };
+    let actual_len = unsafe { GetModuleBaseNameW(*safe_process_handle, None, &mut buffer) };
 
     if actual_len == 0 {
         return Err(anyhow!(
@@ -255,17 +258,19 @@ pub fn pid_to_process_full_path(pid: u32) -> anyhow::Result<String> {
             pid,
         )?
     };
-    let safe_process_handle = SafeHandle::new(process_handle);
+    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
+    let safe_process_handle = unsafe { Owned::new(process_handle) };
 
     get_module_name(&safe_process_handle, None)
 }
 
 pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
     let process_handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid)? };
-    let safe_process_handle = SafeHandle::new(process_handle);
+    // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
+    let safe_process_handle = unsafe { Owned::new(process_handle) };
 
     unsafe {
-        TerminateProcess(safe_process_handle.handle, 1)
+        TerminateProcess(*safe_process_handle, 1)
             .context(format!("Failed to terminate process with PID: {pid}"))?
     }
     Ok(())

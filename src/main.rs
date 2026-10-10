@@ -10,7 +10,6 @@ mod handle_ext;
 mod nt_ext;
 mod path_ext;
 mod process_ext;
-mod safe_handle;
 mod string_ext;
 
 #[derive(Parser, Debug)]
@@ -141,9 +140,7 @@ fn kill_processes(processes: &HashMap<u32, ProcessResult>) -> anyhow::Result<usi
         );
         match process_ext::kill_process_by_pid(*pid) {
             Ok(_) => {
-                println!(
-                    "Successfully sent termination signal to process PID {pid}."
-                );
+                println!("Successfully sent termination signal to process PID {pid}.");
                 killed_count += 1;
             }
             Err(e) => {

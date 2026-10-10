@@ -4,10 +4,10 @@ use windows::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
         FILE_SHARE_WRITE, FILE_TYPE_DISK, GetFileType, OPEN_EXISTING,
     },
-    core::HSTRING,
+    core::{HSTRING, Owned},
 };
 
-use crate::{handle_ext::handle_to_nt_path, safe_handle::SafeHandle};
+use crate::handle_ext::handle_to_nt_path;
 
 pub fn win32_path_to_nt_path(win32_path: impl AsRef<str>) -> anyhow::Result<String> {
     let handle = unsafe {
@@ -26,9 +26,10 @@ pub fn win32_path_to_nt_path(win32_path: impl AsRef<str>) -> anyhow::Result<Stri
         return Err(anyhow!("CreateFileW failed"));
     }
 
-    let safe_handle = SafeHandle::new(handle);
+    // SAFETY: CreateFileW returned a new handle owned exclusively by this scope.
+    let safe_handle = unsafe { Owned::new(handle) };
 
-    let file_type = unsafe { GetFileType(safe_handle.handle) };
+    let file_type = unsafe { GetFileType(*safe_handle) };
     if file_type != FILE_TYPE_DISK {
         return Err(anyhow!("file_type != FILE_TYPE_DISK"));
     }
