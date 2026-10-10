@@ -183,8 +183,16 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     let mut process_results = HashMap::<u32, ProcessResult>::new();
     let mut diagnostics = diagnostics::Diagnostics::default();
 
-    let handle_infos =
-        handle_ext::enum_handles(cli.kill).with_context(|| "Failed to enumerate handles")?;
+    let handle_infos = match handle_ext::enum_handles(cli.kill) {
+        Ok(scan) => {
+            diagnostics.merge(scan.diagnostics);
+            scan.handles
+        }
+        Err(error) => {
+            diagnostics.record(format!("Handle enumeration failed: {error:#}"));
+            Vec::new()
+        }
+    };
 
     for handle_info in handle_infos {
         if path_ext::is_same_or_ancestor_of(&nt_path, &handle_info.nt_path) {
