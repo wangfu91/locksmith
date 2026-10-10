@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use std::{
     ffi::OsStr,
     os::windows::ffi::OsStrExt,
@@ -6,41 +6,75 @@ use std::{
 };
 use windows::{
     Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_TYPE_DISK, GetFileType, OPEN_EXISTING,
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, OPEN_EXISTING,
     },
     core::{HSTRING, Owned},
 };
 
 use crate::handle_ext::handle_to_nt_path;
 
-pub fn win32_path_to_nt_path(win32_path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
-    let handle = unsafe {
-        CreateFileW(
-            &HSTRING::from(win32_path.as_ref()),
-            0u32,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            None,
-        )?
-    };
+pub struct Target {
+    pub nt_path: PathBuf,
+    reference: Vec<u16>,
+    is_directory: bool,
+    _handle: Owned<windows::Win32::Foundation::HANDLE>,
+}
 
-    if handle.is_invalid() {
-        return Err(anyhow!("CreateFileW failed"));
+impl Target {
+    pub fn open(win32_path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let handle = unsafe {
+            CreateFileW(
+                &HSTRING::from(win32_path.as_ref()),
+                0u32,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )?
+        };
+
+        if handle.is_invalid() {
+            return Err(anyhow!("CreateFileW failed"));
+        }
+
+        // SAFETY: CreateFileW returned a new handle owned exclusively by this scope.
+        let safe_handle = unsafe { Owned::new(handle) };
+
+        let file_type = unsafe { GetFileType(*safe_handle) };
+        if file_type != FILE_TYPE_DISK {
+            return Err(anyhow!("file_type != FILE_TYPE_DISK"));
+        }
+
+        let nt_path = handle_to_nt_path(&safe_handle)?;
+        anyhow::ensure!(!nt_path.as_os_str().is_empty(), "Target has no native path");
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        unsafe { GetFileInformationByHandle(*safe_handle, &mut information) }
+            .context("Cannot query target attributes")?;
+        let reference = nt_path.as_os_str().encode_wide().collect();
+        Ok(Self {
+            nt_path,
+            reference,
+            is_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+            _handle: safe_handle,
+        })
     }
 
-    // SAFETY: CreateFileW returned a new handle owned exclusively by this scope.
-    let safe_handle = unsafe { Owned::new(handle) };
-
-    let file_type = unsafe { GetFileType(*safe_handle) };
-    if file_type != FILE_TYPE_DISK {
-        return Err(anyhow!("file_type != FILE_TYPE_DISK"));
+    pub fn matches(&self, subject: impl AsRef<OsStr>) -> bool {
+        if subject.as_ref() == self.nt_path.as_os_str() {
+            return true;
+        }
+        let units: Vec<_> = subject.as_ref().encode_wide().collect();
+        (self.is_directory || self.reference.len() == units.len())
+            && matches_wide(&self.reference, &units)
     }
+}
 
-    let nt_path = handle_to_nt_path(&safe_handle)?;
-    Ok(nt_path)
+#[cfg(test)]
+pub fn win32_path_to_nt_path(path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+    Ok(Target::open(path)?.nt_path)
 }
 
 /// Checks if the `reference_path` is the same as or an ancestor of the `subject_path`.
@@ -60,6 +94,7 @@ pub fn win32_path_to_nt_path(win32_path: impl AsRef<Path>) -> anyhow::Result<Pat
 ///
 /// `true` if `reference_path` is the same as or an ancestor of `subject_path`,
 /// `false` otherwise. On Windows, the comparison is case-insensitive.
+#[cfg(test)]
 pub fn is_same_or_ancestor_of(
     reference_path: impl AsRef<OsStr>,
     subject_path: impl AsRef<OsStr>,
@@ -94,6 +129,30 @@ pub fn matches_wide(reference: &[u16], subject: &[u16]) -> bool {
 mod tests {
     use super::*;
     use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+    #[test]
+    fn files_match_exact_paths_and_directories_include_descendants() {
+        let dir = std::env::temp_dir().join(format!("locksmith-target-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("data.txt");
+        let result = (|| {
+            std::fs::write(&file, b"test")?;
+            let file_target = Target::open(&file)?;
+            let dir_target = Target::open(&dir)?;
+            assert!(file_target.matches(&file_target.nt_path));
+            assert!(!file_target.matches(file_target.nt_path.join("child")));
+            assert!(dir_target.matches(&file_target.nt_path));
+            assert!(dir_target.matches(&dir_target.nt_path));
+            let sibling = format!("{}-sibling", dir_target.nt_path.display());
+            assert!(!dir_target.matches(sibling));
+            anyhow::Ok(())
+        })();
+        let cleanup_file = std::fs::remove_file(&file);
+        let cleanup_dir = std::fs::remove_dir(&dir);
+        result.unwrap();
+        cleanup_file.unwrap();
+        cleanup_dir.unwrap();
+    }
 
     #[test]
     fn preserves_unpaired_utf16_in_paths_and_matching() {

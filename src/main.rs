@@ -177,7 +177,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
         ));
     }
 
-    let nt_path = path_ext::win32_path_to_nt_path(reference_path)
+    let target = path_ext::Target::open(reference_path)
         .with_context(|| "Failed to convert Win32 path to NT path")?;
 
     let mut process_results = HashMap::<u32, ProcessResult>::new();
@@ -195,7 +195,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     };
 
     for handle_info in handle_infos {
-        if path_ext::is_same_or_ancestor_of(&nt_path, &handle_info.nt_path) {
+        if target.matches(&handle_info.nt_path) {
             let process = handle_info.process;
             let pid = process.pid;
             let path = process
@@ -224,7 +224,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     };
     for process_info in proces_infos {
         for module in &process_info.modules {
-            if path_ext::is_same_or_ancestor_of(&nt_path, module) {
+            if target.matches(module) {
                 let process_result = ProcessResult {
                     process: Rc::clone(&process_info.process),
                     pid: process_info.pid,
