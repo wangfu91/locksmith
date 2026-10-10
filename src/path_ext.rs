@@ -19,7 +19,7 @@ pub struct Target {
     pub nt_path: PathBuf,
     reference: Vec<u16>,
     is_directory: bool,
-    _handle: Owned<windows::Win32::Foundation::HANDLE>,
+    handle: Owned<windows::Win32::Foundation::HANDLE>,
 }
 
 impl Target {
@@ -58,7 +58,7 @@ impl Target {
             nt_path,
             reference,
             is_directory: information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0,
-            _handle: safe_handle,
+            handle: safe_handle,
         })
     }
 
@@ -69,6 +69,10 @@ impl Target {
         let units: Vec<_> = subject.as_ref().encode_wide().collect();
         (self.is_directory || self.reference.len() == units.len())
             && matches_wide(&self.reference, &units)
+    }
+
+    pub fn handle(&self) -> windows::Win32::Foundation::HANDLE {
+        *self.handle
     }
 }
 

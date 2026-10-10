@@ -19,7 +19,7 @@ use windows::{
 };
 
 use crate::string_ext;
-use crate::{nt_ext, process_ext::Process};
+use crate::{nt_ext, path_ext::Target, process_ext::Process};
 
 #[derive(Debug)]
 pub struct HandleInfo {
@@ -32,16 +32,25 @@ pub struct HandleScan {
     pub diagnostics: Diagnostics,
 }
 
-pub fn enum_handles(kill: bool) -> anyhow::Result<HandleScan> {
+pub fn enum_handles(kill: bool, target: &Target) -> anyhow::Result<HandleScan> {
     const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS =
         SYSTEM_INFORMATION_CLASS(64);
     let buffer = nt_ext::nt_query_information_loop(SYSTEM_EXTENDED_HANDLE_INFORMATION)?;
+    let own_pid = std::process::id() as usize;
+    let target_value = target.handle().0 as usize;
+    let file_type = file_object_type(handle_entries(&buffer)?, own_pid, target_value);
     let mut cache = HashMap::new();
     let mut scan = HandleScan {
         handles: Vec::new(),
         diagnostics: Diagnostics::default(),
     };
     for entry in handle_entries(&buffer)? {
+        if entry.unique_process_id == own_pid && entry.handle_value == target_value {
+            continue; // Our target query handle is not evidence of a locker.
+        }
+        if !is_file_candidate(entry, file_type) {
+            continue;
+        }
         let Ok(pid) = u32::try_from(entry.unique_process_id) else {
             scan.diagnostics
                 .record("Handle table contains an invalid process ID");
@@ -50,7 +59,7 @@ pub fn enum_handles(kill: bool) -> anyhow::Result<HandleScan> {
         let Some(process) = cached_process(&mut cache, pid, kill, &mut scan.diagnostics) else {
             continue;
         };
-        match get_handle_info(entry, process) {
+        match get_handle_info(entry, process, file_type.is_some()) {
             Ok(Some(info)) => scan.handles.push(info),
             Ok(None) => {}
             Err(error) => scan
@@ -91,6 +100,7 @@ fn cached_process(
 fn get_handle_info(
     entry: SystemHandleTableEntryInfoEx,
     process: Rc<Process>,
+    known_file_type: bool,
 ) -> anyhow::Result<Option<HandleInfo>> {
     let mut duplicate = HANDLE::default();
     // SAFETY: the retained source process and output pointer are live. A stale
@@ -108,11 +118,29 @@ fn get_handle_info(
     }?;
     // SAFETY: successful DuplicateHandle created a new independent owned handle.
     let duplicate = unsafe { Owned::new(duplicate) };
-    if !is_handle_type_file(&duplicate)? {
+    if unsafe { GetFileType(*duplicate) } != FILE_TYPE_DISK {
+        return Ok(None);
+    }
+    if !known_file_type && !is_handle_type_file(&duplicate)? {
         return Ok(None);
     }
     let nt_path = handle_to_nt_path(&duplicate)?;
     Ok(Some(HandleInfo { process, nt_path }))
+}
+
+fn file_object_type(
+    mut entries: impl Iterator<Item = SystemHandleTableEntryInfoEx>,
+    own_pid: usize,
+    target_value: usize,
+) -> Option<u16> {
+    entries
+        .find(|entry| entry.unique_process_id == own_pid && entry.handle_value == target_value)
+        .map(|entry| entry.object_type_index)
+        .filter(|index| *index != 0)
+}
+
+fn is_file_candidate(entry: SystemHandleTableEntryInfoEx, file_type: Option<u16>) -> bool {
+    file_type.is_none_or(|index| entry.object_type_index == index)
 }
 pub fn is_handle_type_file(safe_file_handle: &Owned<HANDLE>) -> anyhow::Result<bool> {
     let buffer = nt_ext::nt_query_object_loop(safe_file_handle, ObjectTypeInformation)?;
@@ -181,7 +209,7 @@ fn handle_entries(
     }))
 }
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SystemHandleTableEntryInfoEx {
     object: *mut ::core::ffi::c_void,
     unique_process_id: usize,
@@ -196,6 +224,52 @@ pub struct SystemHandleTableEntryInfoEx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_type_filter_uses_live_sample_and_has_a_fallback() {
+        let file = SystemHandleTableEntryInfoEx {
+            unique_process_id: 17,
+            handle_value: 42,
+            object_type_index: 73,
+            ..Default::default()
+        };
+        let other = SystemHandleTableEntryInfoEx {
+            object_type_index: 8,
+            ..Default::default()
+        };
+        let index = file_object_type([other, file].into_iter(), 17, 42);
+        assert_eq!(index, Some(73));
+        assert!(is_file_candidate(file, index));
+        assert!(!is_file_candidate(other, index));
+        assert_eq!(file_object_type([other].into_iter(), 17, 42), None);
+        assert!(is_file_candidate(other, None));
+    }
+
+    #[test]
+    fn target_query_handle_is_excluded_but_other_own_file_handles_match() {
+        let path = std::env::temp_dir().join(format!(
+            "locksmith-handle-filter-{}.tmp",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"test").unwrap();
+        let result = (|| {
+            let target = Target::open(&path)?;
+            let first = enum_handles(false, &target)?;
+            assert!(!first.handles.iter().any(
+                |info| info.process.pid == std::process::id() && target.matches(&info.nt_path)
+            ));
+            let held = std::fs::File::open(&path)?;
+            let second = enum_handles(false, &target)?;
+            assert!(second.handles.iter().any(
+                |info| info.process.pid == std::process::id() && target.matches(&info.nt_path)
+            ));
+            drop(held);
+            anyhow::Ok(())
+        })();
+        let cleanup = std::fs::remove_file(&path);
+        result.unwrap();
+        cleanup.unwrap();
+    }
 
     #[test]
     fn process_cache_reuses_identity_and_reports_open_failure_once() {
@@ -245,7 +319,8 @@ mod tests {
     // cargo test test_enum_handles -- --nocapture
     #[test]
     fn test_enum_handles() {
-        let handle_infos = enum_handles(false).unwrap().handles;
+        let target = Target::open(std::env::current_exe().unwrap()).unwrap();
+        let handle_infos = enum_handles(false, &target).unwrap().handles;
         assert!(!handle_infos.is_empty());
 
         for handle_info in handle_infos {

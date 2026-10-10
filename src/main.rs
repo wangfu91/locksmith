@@ -183,7 +183,7 @@ fn find_locker(cli: &Cli) -> anyhow::Result<ScanResult> {
     let mut process_results = HashMap::<u32, ProcessResult>::new();
     let mut diagnostics = diagnostics::Diagnostics::default();
 
-    let handle_infos = match handle_ext::enum_handles(cli.kill) {
+    let handle_infos = match handle_ext::enum_handles(cli.kill, &target) {
         Ok(scan) => {
             diagnostics.merge(scan.diagnostics);
             scan.handles
