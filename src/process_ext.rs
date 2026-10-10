@@ -99,47 +99,55 @@ pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
         unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)? };
     // SAFETY: OpenProcess returned a fresh handle; ownership transfers to this scope.
     let safe_process_handle = unsafe { Owned::new(process_handle) };
-    let mut buffer = vec![0u8; MAX_PATH as usize];
-
-    let mut size_needed = 0u32;
-    loop {
-        if let Err(err) = unsafe {
+    let modules = query_modules(|buffer| {
+        let mut needed = 0;
+        // SAFETY: the live process handle and typed writable module array are valid.
+        unsafe {
             EnumProcessModules(
                 *safe_process_handle,
-                buffer.as_mut_ptr() as _,
-                buffer.len() as u32,
-                &mut size_needed,
+                buffer.as_mut_ptr(),
+                std::mem::size_of_val(buffer) as u32,
+                &mut needed,
             )
-        } {
-            return Err(anyhow!("EnumProcessModules failed with error: {:?}", err));
-        }
-
-        if (size_needed as usize) > buffer.len() {
-            buffer.resize(size_needed as usize, 0);
-            continue;
-        }
-
-        break;
-    }
-
-    let size_of_single_module = std::mem::size_of::<HMODULE>() as u32;
-    let module_count = size_needed / size_of_single_module;
-
-    let mut moudle_nt_path_collection = Vec::<PathBuf>::with_capacity(module_count as usize);
-
-    for i in 0..module_count {
-        let module = unsafe {
-            std::ptr::read_unaligned(
-                buffer.as_ptr().add((i * size_of_single_module) as usize) as *const HMODULE
-            )
-        };
-        let module_nt_path = mapped_module_path(&safe_process_handle, module)?;
-        moudle_nt_path_collection.push(module_nt_path);
-    }
-
-    Ok(moudle_nt_path_collection)
+        }?;
+        Ok(needed as usize)
+    })
+    .context("EnumProcessModules failed")?;
+    modules
+        .into_iter()
+        .map(|module| mapped_module_path(&safe_process_handle, module))
+        .collect()
 }
 
+fn query_modules(
+    mut query: impl FnMut(&mut [HMODULE]) -> anyhow::Result<usize>,
+) -> anyhow::Result<Vec<HMODULE>> {
+    const MAX_MODULES: usize = 65_536;
+    let mut modules = vec![HMODULE::default(); 128];
+    for _ in 0..8 {
+        let bytes = query(&mut modules)?;
+        anyhow::ensure!(
+            bytes.is_multiple_of(std::mem::size_of::<HMODULE>()),
+            "Module list returned a partial record"
+        );
+        let count = bytes / std::mem::size_of::<HMODULE>();
+        anyhow::ensure!(
+            count <= MAX_MODULES,
+            "Module list exceeds the capacity limit"
+        );
+        if count <= modules.len() {
+            modules.truncate(count);
+            return Ok(modules);
+        }
+        let next = count
+            .saturating_add(count / 4)
+            .max(modules.len() * 2)
+            .min(MAX_MODULES);
+        modules.try_reserve_exact(next - modules.len())?;
+        modules.resize(next, HMODULE::default());
+    }
+    anyhow::bail!("Module list exceeded the retry limit")
+}
 /// Ask for the existing mapping's name; never reopen a foreign loader path.
 fn mapped_module_path(process: &Owned<HANDLE>, module: HMODULE) -> anyhow::Result<PathBuf> {
     let buffer = wide_query::query(|buffer| {
@@ -308,6 +316,32 @@ pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_module_array_retries_and_rejects_bad_lengths() {
+        let mut attempts = 0;
+        let modules = query_modules(|buffer| {
+            attempts += 1;
+            if attempts == 1 {
+                return Ok(512 * std::mem::size_of::<HMODULE>());
+            }
+            buffer[0] = HMODULE(17usize as *mut _);
+            buffer[1] = HMODULE(99usize as *mut _);
+            Ok(2 * std::mem::size_of::<HMODULE>())
+        })
+        .unwrap();
+        assert_eq!(
+            modules
+                .iter()
+                .map(|module| module.0 as usize)
+                .collect::<Vec<_>>(),
+            [17, 99]
+        );
+        assert_eq!(attempts, 2);
+        assert!(query_modules(|_| Ok(1)).is_err());
+        assert!(query_modules(|_| Ok(usize::MAX)).is_err());
+        assert!(query_modules(|_| Ok(0)).unwrap().is_empty());
+    }
 
     #[test]
     fn snapshot_retains_single_first_and_last_entries() {
