@@ -34,5 +34,6 @@ features = [
     "Win32_System_WindowsProgramming",
     "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_Security",
 ]

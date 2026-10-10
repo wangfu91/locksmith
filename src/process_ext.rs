@@ -1,13 +1,16 @@
 use anyhow::{Context, anyhow};
 use windows::{
-    Wdk::System::SystemInformation::SystemProcessInformation,
     Win32::{
-        Foundation::{ERROR_INSUFFICIENT_BUFFER, HANDLE, HMODULE, MAX_PATH},
+        Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, HANDLE, HMODULE, MAX_PATH},
         Security::{
             GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
             TokenUser,
         },
         System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
             ProcessStatus::{
                 EnumProcessModules, GetMappedFileNameW, GetModuleBaseNameW, GetModuleFileNameExW,
             },
@@ -16,13 +19,12 @@ use windows::{
                 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_READ,
                 TerminateProcess,
             },
-            WindowsProgramming::SYSTEM_PROCESS_INFORMATION,
         },
     },
     core::{Error, Owned, PWSTR},
 };
 
-use crate::{nt_ext, string_ext::ToString, wide_query};
+use crate::wide_query;
 
 pub struct ProcessInfo {
     pub pid: u32,
@@ -32,26 +34,15 @@ pub struct ProcessInfo {
 }
 
 pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
-    let buffer = nt_ext::nt_query_information_loop(SystemProcessInformation)?;
-
     let mut process_info_collection = Vec::<ProcessInfo>::new();
-
-    let mut offset = 0usize;
-    loop {
-        let process_info: SYSTEM_PROCESS_INFORMATION = unsafe {
-            std::ptr::read_unaligned(
-                buffer.as_ptr().add(offset) as *const SYSTEM_PROCESS_INFORMATION
-            )
-        };
-
-        if process_info.NextEntryOffset == 0 {
-            break;
-        }
-
-        offset += process_info.NextEntryOffset as usize;
-
-        let pid = process_info.UniqueProcessId.0 as u32;
-        let process_name = process_info.ImageName.to_string();
+    for entry in process_snapshot()? {
+        let pid = entry.th32ProcessID;
+        let name_len = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let process_name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
 
         let process_full_path =
             pid_to_process_full_path(pid).unwrap_or_else(|_| "unknown".to_string());
@@ -68,6 +59,37 @@ pub fn enum_processes() -> anyhow::Result<Vec<ProcessInfo>> {
     }
 
     Ok(process_info_collection)
+}
+
+pub fn process_snapshot() -> anyhow::Result<Vec<PROCESSENTRY32W>> {
+    let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)? };
+    // SAFETY: the successful snapshot call creates a fresh owned handle.
+    let snapshot = unsafe { Owned::new(raw) };
+    let mut first = true;
+    collect_snapshot(|entry| {
+        if std::mem::replace(&mut first, false) {
+            unsafe { Process32FirstW(*snapshot, entry) }
+        } else {
+            unsafe { Process32NextW(*snapshot, entry) }
+        }
+    })
+}
+
+fn collect_snapshot(
+    mut next: impl FnMut(&mut PROCESSENTRY32W) -> windows::core::Result<()>,
+) -> anyhow::Result<Vec<PROCESSENTRY32W>> {
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut entries = Vec::new();
+    loop {
+        match next(&mut entry) {
+            Ok(()) => entries.push(entry),
+            Err(error) if error.code() == ERROR_NO_MORE_FILES.into() => return Ok(entries),
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 pub fn enum_process_modules(pid: u32) -> anyhow::Result<Vec<String>> {
@@ -285,6 +307,44 @@ pub fn kill_process_by_pid(pid: u32) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_retains_single_first_and_last_entries() {
+        for expected in [vec![17], vec![17, 42, 99]] {
+            let mut ids = expected.iter();
+            let entries = collect_snapshot(|entry| match ids.next() {
+                Some(&pid) => {
+                    entry.th32ProcessID = pid;
+                    Ok(())
+                }
+                None => Err(Error::from_hresult(ERROR_NO_MORE_FILES.into())),
+            })
+            .unwrap();
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|entry| entry.th32ProcessID)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        assert!(
+            collect_snapshot(|_| Err(Error::from_hresult(
+                windows::Win32::Foundation::ERROR_ACCESS_DENIED.into()
+            )))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn live_snapshot_includes_this_process() {
+        assert!(
+            process_snapshot()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.th32ProcessID == std::process::id())
+        );
+    }
 
     #[test]
     fn mapped_executable_and_dll_match_existing_file_names() {
