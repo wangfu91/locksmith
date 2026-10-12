@@ -23,6 +23,8 @@ The script builds with `--locked` and a static CRT, checks `--help` when the hos
 can run the target executable, stages only the executable, license, manifest,
 and icon assets, then runs MakeAppx validation with SHA-256 block hashes.
 It prints the upload path and SHA-256.
+The build explicitly uses the repo's `target` directory, overriding
+`CARGO_TARGET_DIR` and Cargo's `build.target-dir` so staging uses the fresh build.
 Output is under `target\msix`, which is ignored by Git. It does not sign, install,
 upload, or submit anything. Microsoft signs Store-delivered MSIX packages;
 sideloading requires a separately signed package or a development registration.
@@ -39,6 +41,9 @@ Regenerate icon sizes from the included imagegen artwork with
 `.\packaging\msix\New-Assets.ps1`. `StoreIcon.png` is the 300x300 listing icon.
 
 ## Release validation
+
+Run `.\packaging\msix\Test-Build-Msix.ps1` to verify both target-directory
+overrides with offline Cargo fixtures and MakeAppx, including a stale executable.
 
 Run existing tests against the same static-CRT release configuration:
 

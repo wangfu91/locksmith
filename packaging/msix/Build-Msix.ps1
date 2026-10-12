@@ -28,14 +28,16 @@ if ($version.Major -lt 1 -or $version.Revision -ne 0 -or
     throw 'Store versions need four components, a nonzero major, components <= 65535, and revision 0.'
 }
 $target = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+$targetDir = Join-Path $repoRoot 'target'
 $previousRustFlags = $env:RUSTFLAGS
 Push-Location $repoRoot
 try {
     # Include the CRT in the binary so the MSIX needs no VC runtime installer.
     $env:RUSTFLAGS = "$previousRustFlags -C target-feature=+crt-static".Trim()
-    & cargo build --release --locked --target $target --bin locksmith
+    # Override Cargo configuration so the build and staging paths always agree.
+    & cargo build --release --locked --target $target --target-dir $targetDir --bin locksmith
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
-    $binary = Join-Path $repoRoot "target\$target\release\locksmith.exe"
+    $binary = Join-Path $targetDir "$target\release\locksmith.exe"
     if ($Architecture -eq 'x64' -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
         & $binary --help
         if ($LASTEXITCODE -ne 0) { throw 'Release CLI help smoke check failed.' }
@@ -43,7 +45,7 @@ try {
         Write-Warning 'ARM64 binary built by cross compilation; runtime validation requires Windows on ARM64.'
     }
     # Use a fresh staging directory; never package the whole build directory.
-    $buildRoot = Join-Path $repoRoot 'target\msix'
+    $buildRoot = Join-Path $targetDir 'msix'
     $null = New-Item -ItemType Directory -Force -Path $buildRoot
     $stage = Join-Path $buildRoot "stage-$([guid]::NewGuid().ToString('N'))"
     $null = New-Item -ItemType Directory -Path $stage
