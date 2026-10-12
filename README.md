@@ -11,7 +11,13 @@ A Windows command-line utility that identifies processes using a file or directo
 
 ## 📦 Installation
 
-Locksmith runs on Windows. Installing with Cargo requires [Rust and Cargo](https://www.rust-lang.org/tools/install).
+Locksmith runs on Windows. Install it from the Microsoft Store:
+
+<a href="https://apps.microsoft.com/detail/9PF14DG43JH0">
+  <img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft Store" width="200" />
+</a>
+
+Or install with Cargo, which requires [Rust and Cargo](https://www.rust-lang.org/tools/install):
 
 ```sh
 cargo install win-locksmith
@@ -84,6 +90,8 @@ git clone https://github.com/wangfu91/locksmith
 cd locksmith
 cargo build --release
 ```
+
+For Microsoft Store MSIX packaging, see [the packaging guide](packaging/msix/README.md).
 
 ## 📜 License
 
